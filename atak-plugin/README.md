@@ -41,12 +41,27 @@ actually goes over LoRa.
 
 The project follows the layout of the SDK's `plugin-examples/plugintemplate`.
 
-**Requirement: JDK 17 or newer to run Gradle.** Gradle 9 and the Android
-Gradle Plugin 8.x refuse to start on Java 8 ("Gradle requires JVM 17 or later
-to run"). The plugin's own code still compiles for Android as usual.
+**Requirement: a 64-bit JDK 17 or newer to run Gradle.** The Android Gradle
+Plugin 8.x (and Gradle 9) will not run on Java 8, and a 32-bit Java cannot
+allocate the 4 GB heap set in `gradle.properties` ("Invalid maximum heap
+size: -Xmx4g"). `settings.gradle` stops early with a clear message if Gradle
+is on the wrong Java.
 
-* Command line: point `JAVA_HOME` at a JDK 17+ before running `./gradlew`
-  (`./gradlew --version` shows the "Daemon JVM" it will use).
+* Command line: point `JAVA_HOME` at a 64-bit JDK 17+ before running
+  `gradlew`, then stop any old daemons. Android Studio's bundled JDK works:
+
+  ```bat
+  :: Windows cmd (PowerShell: $env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr")
+  set JAVA_HOME=C:\Program Files\Android\Android Studio\jbr
+  gradlew --stop
+  gradlew --version
+  ```
+
+  `gradlew --version` must show a 17+ "Daemon JVM" / "Launcher JVM", not
+  `C:\Program Files (x86)\Java\jre1.8...`. To make it permanent, set
+  `JAVA_HOME` under *System Properties → Environment Variables*, or put
+  `org.gradle.java.home=C:/Program Files/Android/Android Studio/jbr` in
+  `%USERPROFILE%\.gradle\gradle.properties`.
 * Android Studio: *Settings → Build, Execution, Deployment → Build Tools →
   Gradle → Gradle JDK* → pick a 17+ JDK (the bundled *jbr-17*/*jbr-21* works).
 

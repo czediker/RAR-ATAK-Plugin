@@ -1,2 +1,14 @@
+// The Android Gradle Plugin needs a 64-bit JDK 17 or newer to run Gradle.
+// Fail early with a clear message instead of AGP's or the JVM's.
+if (!JavaVersion.current().isCompatibleWith(JavaVersion.VERSION_17) ||
+        System.getProperty('sun.arch.data.model') == '32') {
+    throw new GradleException(
+            "Gradle is running on Java ${JavaVersion.current()} " +
+            "(${System.getProperty('sun.arch.data.model')}-bit) from ${System.getProperty('java.home')}.\n" +
+            "This build needs a 64-bit JDK 17 or newer: set JAVA_HOME (command line) or " +
+            "Settings > Build Tools > Gradle > Gradle JDK (Android Studio), then run 'gradlew --stop'. " +
+            "See atak-plugin/README.md.")
+}
+
 rootProject.name = 'RarDualBand'
 include ':app'
