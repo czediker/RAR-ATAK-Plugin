@@ -41,6 +41,15 @@ actually goes over LoRa.
 
 The project follows the layout of the SDK's `plugin-examples/plugintemplate`.
 
+**Requirement: JDK 17 or newer to run Gradle.** Gradle 9 and the Android
+Gradle Plugin 8.x refuse to start on Java 8 ("Gradle requires JVM 17 or later
+to run"). The plugin's own code still compiles for Android as usual.
+
+* Command line: point `JAVA_HOME` at a JDK 17+ before running `./gradlew`
+  (`./gradlew --version` shows the "Daemon JVM" it will use).
+* Android Studio: *Settings → Build, Execution, Deployment → Build Tools →
+  Gradle → Gradle JDK* → pick a 17+ JDK (the bundled *jbr-17*/*jbr-21* works).
+
 1. Copy this `atak-plugin/` directory into your SDK as
    `<ATAK-CIV-SDK>/plugins/RarDualBand/` (the takdev Gradle plugin looks for
    the SDK two directories up).
@@ -64,9 +73,13 @@ The project follows the layout of the SDK's `plugin-examples/plugintemplate`.
    ```
 5. In ATAK: *Settings → Plugins* (or the Plugins tool), load **RAR Dual-Band**.
 
+Use the template's `./gradlew`, not a system-installed `gradle`: the Android
+Gradle Plugin only works with a matching Gradle version.
+
 If your SDK's template uses different Android Gradle Plugin or takdev
-versions than `app/build.gradle`, copy the template's `app/build.gradle`
-over it and keep `namespace 'com.rar.atak.dualband'`, `PLUGIN_VERSION`,
+versions than `app/build.gradle` (the `com.android.tools.build:gradle:` line
+in its `app/build.gradle`), copy the template's `app/build.gradle` over this
+one and keep `namespace 'com.rar.atak.dualband'`, `PLUGIN_VERSION`,
 `ATAK_VERSION` and the `junit` test dependency.
 
 Unit tests for the pure-Java parts (filter, PLI builder, de-duplication):
