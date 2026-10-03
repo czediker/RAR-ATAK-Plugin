@@ -80,13 +80,40 @@ is on the wrong Java.
    takDebugKeyAlias=androiddebugkey
    takDebugKeyPassword=android
    ```
-4. Build and install:
+4. Build and install. With the phone connected (`adb devices` lists it),
+   one Gradle task builds the APK and installs it:
 
    ```sh
-   ./gradlew assembleCivDebug
+   ./gradlew installCivDebug
+   ```
+
+   To build only, run `./gradlew assembleCivDebug`; the APK is written to
+   `app/build/outputs/apk/civ/debug/` (relative to the directory you ran
+   Gradle in). To find and install it by hand:
+
+   ```bat
+   :: Windows cmd (cmd and PowerShell do not expand *.apk for adb)
+   dir /s /b app\build\outputs\apk\*.apk
+   adb install -r "<full path printed above>"
+   ```
+
+   ```powershell
+   # PowerShell
+   Get-ChildItem app\build\outputs\apk -Recurse -Filter *.apk | ForEach-Object { adb install -r $_.FullName }
+   ```
+
+   ```sh
+   # Linux / macOS / Git Bash
    adb install -r app/build/outputs/apk/civ/debug/*.apk
    ```
+
+   Android Studio hides `build/` folders in its default *Android* project
+   view; switch the Project pane's dropdown to *Project* to see
+   `app/build/outputs/apk/`.
 5. In ATAK: *Settings → Plugins* (or the Plugins tool), load **RAR Dual-Band**.
+   Store/release ATAK builds only load plugins signed by the TAK Product
+   Center; for a debug-signed plugin use the development ATAK APK that comes
+   with the SDK.
 
 Use the template's `./gradlew`, not a system-installed `gradle`: the Android
 Gradle Plugin only works with a matching Gradle version.
