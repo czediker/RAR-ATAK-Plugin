@@ -75,7 +75,15 @@ received over Meshtastic is delivered there. If your ATAK build lacks it, add
 
 ## 5. Verify
 
-On the radio:
+First check the UART link to the RAK4631 with `rar-meshtest` — it sends
+the text messages `1` … `10` on the primary channel (see
+[hardware.md](hardware.md#uart-link-test-rar-meshtest)):
+
+```sh
+/etc/init.d/rar-bridge stop && rar-meshtest; /etc/init.d/rar-bridge start
+```
+
+Then, on the radio:
 
 ```sh
 logread -f -e rar                 # live logs from both services

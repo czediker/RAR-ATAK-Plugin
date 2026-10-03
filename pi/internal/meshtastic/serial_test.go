@@ -2,6 +2,7 @@ package meshtastic
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -62,4 +63,28 @@ func TestSerialOpenerHandshake(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, "packet over pty", func() bool { radio.mu.Lock(); defer radio.mu.Unlock(); return len(radio.sent) == 1 })
+}
+
+// TestSerialOpenerLocksPort checks that a second opener is refused while the
+// port is held, even for root, and succeeds once it is released.
+func TestSerialOpenerLocksPort(t *testing.T) {
+	master, slave := openPTY(t)
+	defer master.Close()
+
+	open := SerialOpener(slave, 115200)
+	first, err := open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := open(); !errors.Is(err, ErrPortBusy) {
+		t.Fatalf("second open: %v, want ErrPortBusy", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	again, err := open()
+	if err != nil {
+		t.Fatalf("open after release: %v", err)
+	}
+	again.Close()
 }

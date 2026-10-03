@@ -76,6 +76,40 @@ Check after a reboot: `dmesg | grep ttyAMA0` should show the PL011 UART,
 and `logread -e rar-bridge` should report `radio ready` with the RAK's node
 ID.
 
+### UART link test (`rar-meshtest`)
+
+`rar-meshtest` (installed with the services) broadcasts ten text messages,
+`1` … `10`, on the radio's primary channel and then exits. They show up in
+that channel's chat on every other radio in range. It checks both
+directions of the UART: the radio must answer the config handshake and
+acknowledge each message it is handed.
+
+```sh
+/etc/init.d/rar-bridge stop     # only one program can use the UART
+rar-meshtest                    # options: -serial, -baud, -channel, -count, -interval
+/etc/init.d/rar-bridge start
+```
+
+Expected output:
+
+```
+Opening /dev/ttyAMA0 at 115200 baud...
+Radio answered: node !a1b2c3d4, firmware 2.7.x, hop limit 3, preset LONG_FAST
+Sending 10 text messages on channel 0 (default name, PRIMARY), 5s apart
+
+[ 1/10] "1" accepted by the radio (id 53deea4b, TX queue 15/16 free)
+...
+[10/10] "10" accepted by the radio (id 4d40c0b1, TX queue 15/16 free)
+
+Waiting 5s for the radio to finish transmitting...
+PASS: all 10 messages were accepted by the radio. Check that they appear on the other radios.
+```
+
+Exit code 0 = all accepted, 1 = some not accepted, 2 = no answer from the
+radio (it then prints a checklist: PROTO mode, baud, crossed TX/RX, serial
+console). "Accepted" means the RAK received the message over the UART and
+queued it for LoRa; seeing `1`…`10` on another radio confirms the RF side.
+
 ## RGB LED (common anode)
 
 ### Direct drive (default, `active_low=1`)

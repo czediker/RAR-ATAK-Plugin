@@ -51,6 +51,9 @@ type Config struct {
 	// RxBuffer is the received-packet channel size. Default 64.
 	RxBuffer int
 	Logger   *slog.Logger
+	// OnFromRadio, if set, is called with every message received from the
+	// radio (on the client's connection goroutine; it must not block).
+	OnFromRadio func(*meshpb.FromRadio)
 }
 
 // Status describes the radio connection.
@@ -278,6 +281,9 @@ func (c *Client) handleFrame(f []byte) (reconfig bool, err error) {
 	var msg meshpb.FromRadio
 	if err := proto.Unmarshal(f, &msg); err != nil {
 		return false, err
+	}
+	if c.cfg.OnFromRadio != nil {
+		c.cfg.OnFromRadio(&msg)
 	}
 	switch v := msg.GetPayloadVariant().(type) {
 	case *meshpb.FromRadio_MyInfo:

@@ -93,6 +93,10 @@ func (f *fakeRadio) serve() {
 			f.mu.Lock()
 			f.sent = append(f.sent, v.Packet)
 			f.mu.Unlock()
+			// Firmware acknowledges every client packet with a QueueStatus.
+			f.send(&meshpb.FromRadio{PayloadVariant: &meshpb.FromRadio_QueueStatus{QueueStatus: &meshpb.QueueStatus{
+				Free: 15, Maxlen: 16, MeshPacketId: v.Packet.GetId(),
+			}}})
 		case *meshpb.ToRadio_Heartbeat:
 			f.mu.Lock()
 			f.hbs++
@@ -227,5 +231,29 @@ func TestClientReconnectsAndReconfiguresAfterReboot(t *testing.T) {
 func TestNodeID(t *testing.T) {
 	if got := NodeID(0xa1b2c3); got != "!00a1b2c3" {
 		t.Errorf("NodeID = %q", got)
+	}
+}
+
+func TestOnFromRadioSeesQueueStatus(t *testing.T) {
+	acks := make(chan uint32, 4)
+	c, radios, cancel := newTestClient(t, Config{OnFromRadio: func(m *meshpb.FromRadio) {
+		if qs := m.GetQueueStatus(); qs != nil {
+			acks <- qs.GetMeshPacketId()
+		}
+	}})
+	defer cancel()
+	<-radios
+	waitFor(t, "handshake", func() bool { return c.Status().Connected })
+	id, err := c.SendData(meshpb.PortNum_TEXT_MESSAGE_APP, []byte("1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-acks:
+		if got != id {
+			t.Errorf("ack for %x, sent %x", got, id)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no QueueStatus seen by OnFromRadio")
 	}
 }

@@ -11,7 +11,7 @@ LDFLAGS := -s -w -X main.version=$(VERSION)
 BUILD   := build
 ROOTFS  := $(BUILD)/rootfs
 TARBALL := $(BUILD)/rar-radio-$(VERSION)-arm64.tar.gz
-CMDS    := rar-bridge rar-led
+CMDS    := rar-bridge rar-led rar-meshtest
 
 .PHONY: all test vet build arm64 dist install proto clean
 
@@ -38,7 +38,7 @@ arm64:
 dist: arm64
 	rm -rf $(ROOTFS)
 	mkdir -p $(ROOTFS)/usr/bin $(ROOTFS)/etc/init.d $(ROOTFS)/etc/config
-	cp $(BUILD)/arm64/rar-bridge $(BUILD)/arm64/rar-led $(ROOTFS)/usr/bin/
+	cp $(BUILD)/arm64/rar-bridge $(BUILD)/arm64/rar-led $(BUILD)/arm64/rar-meshtest $(ROOTFS)/usr/bin/
 	cp packaging/openwrt/files/etc/init.d/rar-bridge packaging/openwrt/files/etc/init.d/rar-led $(ROOTFS)/etc/init.d/
 	chmod 0755 $(ROOTFS)/usr/bin/* $(ROOTFS)/etc/init.d/*
 	# Shipped as rar.default so an install never overwrites edited settings.
