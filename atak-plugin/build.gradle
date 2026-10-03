@@ -1,0 +1,2 @@
+// All build configuration lives in app/build.gradle, matching the ATAK SDK's
+// plugin-examples/plugintemplate layout.

@@ -1,0 +1,114 @@
+# Hardware setup
+
+## Pin usage on the Pi 4 header
+
+| Physical pin | BCM GPIO | Used by |
+|--------------|----------|---------|
+| 19, 21, 23, 24 | 10, 9, 11, 8 | HaLow HAT (SPI0) |
+| 11, 29 | 17, 5 | WM1302 HAT reset lines (check your HAT revision for others) |
+| **8** | **14 (TXD)** | → RAK4631 RXD1 |
+| **10** | **15 (RXD)** | ← RAK4631 TXD1 |
+| **36** | **16** | LED red cathode |
+| **38** | **20** | LED green cathode |
+| **40** | **21** | LED blue cathode |
+| 1 or 17 | — | 3.3 V for the LED common anode |
+| 6, 9, 14, 20, 25, 30, 34, 39 | — | Ground (one to the RAK4631) |
+
+GPIO 16/20/21 avoid the HaLow HAT's SPI/reset/IRQ pins, the UART and I²C.
+They can be changed with `uci set rar.led.red=...` etc.
+
+## RAK4631 ↔ Pi UART
+
+Wiring (both sides are 3.3 V logic):
+
+* Pi pin 8 (GPIO14 TXD) → RAK4631 **RXD1** (nRF52 P0.15)
+* Pi pin 10 (GPIO15 RXD) ← RAK4631 **TXD1** (nRF52 P0.16)
+* Ground ↔ ground
+
+### Meshtastic settings on the RAK4631
+
+The bridge talks to the radio with the Meshtastic protobuf API, which the
+RAK exposes on its UART only when the **Serial module runs in PROTO mode**:
+
+| Setting | Value |
+|---------|-------|
+| Serial module → enabled | true |
+| mode | **PROTO** |
+| rxd / txd | 15 / 16 (RXD1 / TXD1) |
+| baud | 115200 (must match `rar.bridge.baud`) |
+
+With the Meshtastic CLI over USB, for example:
+
+```sh
+meshtastic --set serial.enabled true --set serial.mode PROTO \
+           --set serial.rxd 15 --set serial.txd 16 --set serial.baud BAUD_115200
+```
+
+RAK4631 firmware also maps a WisBlock GNSS module to these pins; leave GPS
+off (or use a module in another slot) when the UART is used for the bridge.
+
+All radios should run the same Meshtastic firmware release, share the
+channel used for TAK traffic, and use the default LoRa hop limit or set
+`rar.bridge.hop_limit`.
+
+### Pi 4: put the full UART on pins 8/10
+
+On a Pi 4, `/dev/ttyAMA0` (PL011) drives Bluetooth by default. In the boot
+partition's `config.txt` (on OpenWrt usually `/boot/config.txt`):
+
+```ini
+enable_uart=1
+dtoverlay=disable-bt
+```
+
+This does not affect the onboard Wi-Fi access point.
+
+The UART must not also be the Linux console, or kernel messages and a login
+prompt will be sent to the RAK4631:
+
+* remove `console=serial0,115200` (or `console=ttyAMA0,...`) from
+  `cmdline.txt` in the boot partition;
+* make sure `/etc/inittab` has no login on `ttyAMA0` (OpenWrt's
+  `::askconsole:` line follows the kernel console, so it moves off the UART
+  once the console is removed).
+
+Check after a reboot: `dmesg | grep ttyAMA0` should show the PL011 UART,
+and `logread -e rar-bridge` should report `radio ready` with the RAK's node
+ID.
+
+## RGB LED (common anode)
+
+### Direct drive (default, `active_low=1`)
+
+```
+3.3 V (pin 1) ──────────┬─────────────┬─────────────┐
+                        │ anode       │             │
+                      [LED R]       [LED G]       [LED B]
+                        │ cathode     │             │
+                       R1            R2            R3
+                        │             │             │
+                   GPIO16 (36)   GPIO20 (38)   GPIO21 (40)
+```
+
+* Pin **low = LED on**. Never connect the anode to 5 V: with the pin high
+  (3.3 V) the red LED would still conduct and push current into the GPIO.
+* Resistors: size from the LED datasheet for ≤ 8 mA per pin. Typical values
+  are ~150 Ω for red and 22–47 Ω for green/blue. At 3.3 V, green and blue
+  are noticeably dimmer than red because their forward voltage is ~3 V.
+
+### Transistor drive (brighter, `active_low=0`)
+
+For a daylight-visible LED, power the anode from 5 V and switch each cathode
+with a small N-channel MOSFET (e.g. 2N7002) or NPN transistor driven by the
+GPIO. Then **pin high = LED on**; set `uci set rar.led.active_low=0`.
+
+### Keep the LED off during boot
+
+Until `rar-led` starts, the pins are inputs with pull-downs, which can make a
+directly driven common-anode LED glow faintly. Add to `config.txt`:
+
+```ini
+# Direct drive (active low): drive high = off
+gpio=16,20,21=op,dh
+# Transistor drive (active high) instead: gpio=16,20,21=op,dl
+```

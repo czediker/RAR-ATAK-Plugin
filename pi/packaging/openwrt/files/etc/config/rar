@@ -1,0 +1,54 @@
+# RAR dual-band radio services. Edit with `uci set rar.<section>.<option>=...`
+# then `uci commit rar` — both services restart automatically.
+
+config bridge 'bridge'
+	option enabled '1'
+	# RAK4631 on the Pi UART (pins 8/10). The RAK's Meshtastic Serial
+	# module must be enabled in PROTO mode at the same baud rate.
+	option serial_device '/dev/ttyAMA0'
+	option baud '115200'
+	# Meshtastic channel index used for TAK traffic, and hop limit
+	# (0 = use the radio's configured hop limit).
+	option channel '0'
+	option hop_limit '0'
+
+	# HaLow neighbor detection via batman-adv.
+	option mesh_iface 'bat0'
+	# Stand-in: replace with the HaLow 802.11s interface (e.g. wlan0).
+	# While left as HALOW_IFACE, neighbors on any batman-adv interface count.
+	option halow_iface 'HALOW_IFACE'
+	option poll '5s'
+	option neighbor_max_age '5s'
+	option down_after '15s'
+	option up_after '30s'
+
+	# Ports the ATAK plugin sends to, and ATAK's UDP input on the EUD.
+	option listen_auto ':6700'
+	option listen_always ':6701'
+	option eud_port '4242'
+	# Also deliver received traffic to this node's DHCP clients (in
+	# addition to EUDs learned from plugin traffic).
+	option use_dhcp_leases '1'
+
+	# Drop Meshtastic copies of traffic the EUD already got over HaLow.
+	option suppress_halow_dupes '1'
+	option mcast_iface 'br-ahwlan'
+
+	# Meshtastic airtime limits.
+	option pli_interval '60s'
+	option pli_min_interval '15s'
+	option pli_move_meters '50'
+	option tx_gap '3s'
+
+	option log_level 'info'
+
+config led 'led'
+	option enabled '1'
+	option gpiochip 'gpiochip0'
+	# BCM GPIO numbers (physical pins 36 / 38 / 40).
+	option red '16'
+	option green '20'
+	option blue '21'
+	# 1 = common anode wired straight to the pins (pin low = on).
+	# 0 = cathodes switched through transistors (pin high = on).
+	option active_low '1'

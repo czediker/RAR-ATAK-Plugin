@@ -1,0 +1,12 @@
+# Go build output
+/pi/build/
+
+# Android / Gradle
+/atak-plugin/.gradle/
+/atak-plugin/build/
+/atak-plugin/app/build/
+/atak-plugin/local.properties
+/atak-plugin/.idea/
+*.iml
+*.apk
+*.keystore

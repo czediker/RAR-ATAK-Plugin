@@ -1,0 +1,21 @@
+# Release builds: same rules as the ATAK SDK plugintemplate. The takdev
+# Gradle plugin substitutes <atak.proguard.mapping> with ATAK's mapping file
+# so obfuscated ATAK classes resolve.
+
+-dontskipnonpubliclibraryclasses
+-dontshrink
+-dontoptimize
+
+-applymapping <atak.proguard.mapping>
+-repackageclasses atakplugin.RarDualBand
+
+-keepattributes Exceptions,InnerClasses,Signature,Deprecated,SourceFile,LineNumberTable,*Annotation*,EnclosingMethod
+
+# The plugin entry point is loaded by name from assets/plugin.xml.
+-keep class * implements gov.tak.api.plugin.IPlugin {
+    <init>(...);
+    *;
+}
+
+# Callbacks invoked by ATAK.
+-keep class com.rar.atak.dualband.OutboundTap { *; }

@@ -1,0 +1,183 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+// RAR Dual-Band ATAK plugin.
+//
+// This build follows the layout of the ATAK-CIV SDK's
+// plugin-examples/plugintemplate: place this atak-plugin/ directory at
+// <SDK>/plugins/RarDualBand/ so the takdev Gradle plugin finds the SDK
+// (main.jar, atak-gradle-takdev.jar) two directories up. If your SDK's
+// template uses different Android Gradle Plugin / takdev versions, copy its
+// app/build.gradle over this file and keep `namespace`, PLUGIN_VERSION,
+// ATAK_VERSION and the junit test dependency from here.
+//
+// PLUGIN_VERSION is the version of this plugin.
+// ATAK_VERSION   is the ATAK version the plugin is built against.
+//
+////////////////////////////////////////////////////////////////////////////////
+
+buildscript {
+    ext.PLUGIN_VERSION = "1.0.0"
+    ext.ATAK_VERSION = "5.8.0"
+
+    def takdevVersion = '3.+'
+
+    def getValueFromPropertiesFile = { propFile, key ->
+        if (!propFile.isFile() || !propFile.canRead())
+            return null
+        def prop = new Properties()
+        def reader = propFile.newReader()
+        try {
+            prop.load(reader)
+        } finally {
+            reader.close()
+        }
+        return prop.get(key)
+    }
+
+    def getProperty = { name, defValue ->
+        def prop = project.properties[name] ?:
+                getValueFromPropertiesFile(project.rootProject.file('local.properties'), name)
+        return (null == prop) ? defValue : prop
+    }
+
+    def urlKey = 'takrepo.url'
+
+    ext.isDevKitEnabled = { ->
+        return getProperty(urlKey, null) != null
+    }
+
+    ext.takrepoUrl = getProperty(urlKey, 'https://localhost/')
+    ext.takrepoUser = getProperty('takrepo.user', 'invalid')
+    ext.takrepoPassword = getProperty('takrepo.password', 'invalid')
+    ext.takdevPlugin = getProperty('takdev.plugin', "${rootDir}/../../atak-gradle-takdev.jar")
+
+    repositories {
+        google()
+        mavenCentral()
+        mavenLocal()
+        maven {
+            url = takrepoUrl
+            credentials {
+                username = takrepoUser
+                password = takrepoPassword
+            }
+        }
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.3.2'
+        if (isDevKitEnabled()) {
+            classpath "com.atakmap.gradle:atak-gradle-takdev:${takdevVersion}"
+        } else {
+            classpath files(takdevPlugin)
+        }
+    }
+}
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+        mavenLocal()
+    }
+}
+
+apply plugin: 'com.android.application'
+apply plugin: 'atak-takdev-plugin'
+
+def localProperty = { key ->
+    def f = project.rootProject.file('local.properties')
+    if (!f.isFile() || !f.canRead())
+        return null
+    def prop = new Properties()
+    f.withReader { prop.load(it) }
+    return prop.get(key)
+}
+
+android {
+    namespace 'com.rar.atak.dualband'
+    compileSdk 34
+
+    defaultConfig {
+        minSdkVersion 21
+        targetSdkVersion 34
+        versionCode 1
+        versionName PLUGIN_VERSION + " - [" + ATAK_VERSION + "]"
+        ndk {
+            abiFilters "armeabi-v7a", "arm64-v8a", "x86"
+        }
+    }
+
+    // Signing keys come from local.properties, as in the SDK template:
+    //   takDebugKeyFile, takDebugKeyFilePassword, takDebugKeyAlias, takDebugKeyPassword
+    //   takReleaseKeyFile, takReleaseKeyFilePassword, takReleaseKeyAlias, takReleaseKeyPassword
+    signingConfigs {
+        debug {
+            def kf = localProperty('takDebugKeyFile')
+            if (kf != null) {
+                storeFile file(kf)
+                storePassword localProperty('takDebugKeyFilePassword')
+                keyAlias localProperty('takDebugKeyAlias')
+                keyPassword localProperty('takDebugKeyPassword')
+            }
+        }
+        release {
+            def kf = localProperty('takReleaseKeyFile')
+            if (kf != null) {
+                storeFile file(kf)
+                storePassword localProperty('takReleaseKeyFilePassword')
+                keyAlias localProperty('takReleaseKeyAlias')
+                keyPassword localProperty('takReleaseKeyPassword')
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            debuggable true
+            signingConfig signingConfigs.debug
+            matchingFallbacks = ['sdk']
+        }
+        release {
+            minifyEnabled true
+            proguardFile 'proguard-gradle.txt'
+            signingConfig signingConfigs.release
+            matchingFallbacks = ['odk']
+        }
+    }
+
+    flavorDimensions = ["application"]
+    productFlavors {
+        civ {
+            dimension "application"
+            isDefault = true
+            manifestPlaceholders = [atakApiVersion: "com.atakmap.app@" + ATAK_VERSION + ".CIV"]
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
+    lint {
+        abortOnError false
+    }
+
+    testOptions {
+        unitTests.returnDefaultValues = true
+    }
+}
+
+base {
+    archivesName = "ATAK-Plugin-RarDualBand-" + PLUGIN_VERSION + "-" + ATAK_VERSION
+}
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+}

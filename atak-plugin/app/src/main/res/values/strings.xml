@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">RAR Dual-Band</string>
+    <string name="app_desc">Copies chat and position reports to the RAR radio so they can fall back to Meshtastic when the HaLow mesh is out of range.</string>
+
+    <string name="rar_force_label">Always send over Meshtastic</string>
+    <string name="rar_mode_auto">Automatic (port %1$d): the radio sends chat and position over Meshtastic only when HaLow has no neighbors.</string>
+    <string name="rar_mode_always">Always (port %1$d): chat and position are sent over Meshtastic as well as HaLow.</string>
+
+    <string name="rar_address_label">Radio address (leave blank for automatic)</string>
+    <string name="rar_address_hint">automatic</string>
+    <string name="rar_address_save">Save</string>
+
+    <string name="rar_status_radio">Radio: %1$s (%2$s)</string>
+    <string name="rar_status_no_radio">Radio: not contacted yet</string>
+    <string name="rar_status_sent">Copies sent: %1$d (last %2$s ago)</string>
+    <string name="rar_status_error">Last error: %1$s</string>
+</resources>
