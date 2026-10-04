@@ -66,8 +66,24 @@ This does not affect the onboard Wi-Fi access point.
 The UART must not also be the Linux console, or kernel messages and a login
 prompt will be sent to the RAK4631:
 
-* remove `console=serial0,115200` (or `console=ttyAMA0,...`) from
-  `cmdline.txt` in the boot partition;
+* delete the `console=serial0,115200` (or `console=ttyAMA0,...`) entry from
+  `cmdline.txt` in the boot partition. Delete only that entry; do not
+  replace it with another serial console. Leave the rest of the line as
+  it is, especially `root=...` and `rootwait`, and keep the file on a
+  single line. OpenWrt 24.10's stock file changes from
+
+  ```
+  console=tty1 console=serial0,115200 root=PARTUUID=xxxxxxxx-02 rootfstype=squashfs,ext4 rootwait
+  ```
+
+  to
+
+  ```
+  console=tty1 root=PARTUUID=xxxxxxxx-02 rootfstype=squashfs,ext4 rootwait
+  ```
+
+  `console=tty1` (the HDMI screen) stays. If the serial entry was the only
+  `console=` on your line, put `console=tty1` in its place;
 * make sure `/etc/inittab` has no login on `ttyAMA0` (OpenWrt's
   `::askconsole:` line follows the kernel console, so it moves off the UART
   once the console is removed).
