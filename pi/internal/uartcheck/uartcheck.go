@@ -58,8 +58,12 @@ func check(s system, real string, rdev uint64, self int) []string {
 				"process %d (%s) uses %s as its terminal (a login console); "+
 					"each time its session ends the kernel hangs up the port", p.pid, p.name, real))
 		} else {
-			problems = append(problems, fmt.Sprintf(
-				"process %d (%s) has %s open and will take data meant for the bridge", p.pid, p.name, real))
+			msg := fmt.Sprintf("process %d (%s) has %s open and will take data meant for the bridge", p.pid, p.name, real)
+			if p.name == "gpsd" {
+				msg += "; gpsd is a GPS daemon, so a GPS receiver is probably wired to this port too " +
+					"(the Seeed WM1302 Pi HAT's GPS uses the Pi's UART, pins 8/10): connect the RAK4631 by USB instead"
+			}
+			problems = append(problems, msg)
 		}
 	}
 	return problems

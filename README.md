@@ -4,7 +4,7 @@ Software for a handheld ATAK radio with two meshes:
 
 * **Primary — Wi-Fi HaLow** (Seeed Wio-WM6108 on a Raspberry Pi 4 running
   openMANET): short range, high data rate. ATAK uses it normally.
-* **Fallback — Meshtastic LoRa** (RAK4631 on the Pi's UART): long range, low
+* **Fallback — Meshtastic LoRa** (RAK4631 on the Pi's USB or UART): long range, low
   data rate. Used for ATAK chat and position reports when the radio has no
   HaLow neighbors, or always when the user asks for it.
 
@@ -22,8 +22,8 @@ Software for a handheld ATAK radio with two meshes:
  │  ├─ Meshtastic RX → CoT → UDP 4242 on the local EUD                     │
  │  └─ writes /var/run/rar/state.json                                      │
  │ rar-led ── reads state.json each second ── RGB LED (GPIO 20 G / 21 B)   │
- └──────────────────────────────── /dev/ttyAMA0 ───────────────────────────┘
-                                        │ UART (Meshtastic Serial module, PROTO mode)
+ └─────────────────────────── /dev/ttyACM0 (USB) ──────────────────────────┘
+                                        │ Meshtastic serial API (USB, or UART in PROTO mode)
                                  RAK4631 (Meshtastic) ── LoRa mesh
 ```
 
@@ -35,7 +35,7 @@ Software for a handheld ATAK radio with two meshes:
 | [`atak-plugin/`](atak-plugin) | ATAK-CIV 5.8 plugin (Java, SDK plugintemplate layout) |
 | [`docs/architecture.md`](docs/architecture.md) | How the pieces behave: forwarding policy, timing, de-duplication, extension points |
 | [`docs/wire-format.md`](docs/wire-format.md) | Ports, CoT ⇄ TAKPacket mapping, status file schema |
-| [`docs/hardware.md`](docs/hardware.md) | UART and LED wiring, `config.txt`, Meshtastic serial settings |
+| [`docs/hardware.md`](docs/hardware.md) | Connecting the RAK4631 (USB or UART), LED wiring, `config.txt`, Meshtastic serial settings |
 | [`docs/deployment.md`](docs/deployment.md) | Build, install, configure and verify on a radio |
 
 ## LED
@@ -66,13 +66,14 @@ cd pi
 make install HOST=root@<radio-ip>                                    # Linux / macOS / WSL
 powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Radio <radio-ip>   # Windows
 ssh root@<radio-ip> "uci set rar.bridge.halow_iface='wlan0'; uci commit rar"   # your HaLow interface
+ssh root@<radio-ip> "uci set rar.bridge.serial_device='/dev/ttyACM0'; uci commit rar"   # RAK4631 on USB
 ```
 
 Add `RESET=1` / `-ResetConfig` to reset `/etc/config/rar` to the release
 defaults while keeping the radio's own settings.
 
 Build the plugin inside your ATAK SDK — see [`atak-plugin/README.md`](atak-plugin/README.md).
-Full steps, including the Pi UART setup the RAK4631 needs, are in
+Full steps, including connecting the RAK4631 (USB with the WM1302 HAT, whose GPS occupies the Pi's UART), are in
 [`docs/deployment.md`](docs/deployment.md).
 
 ## Current scope

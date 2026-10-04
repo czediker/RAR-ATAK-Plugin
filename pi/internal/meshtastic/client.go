@@ -424,12 +424,12 @@ func (c *Client) disconnect(conn io.Writer) {
 func LinkHint(rxBytes, rxFrames uint64) string {
 	switch {
 	case rxBytes == 0:
-		return "nothing arrived from the radio: check the RAK TXD1 -> Pi pin 10 wire, " +
-			"that the radio's GPS mode is NOT_PRESENT (the RAK4631 GPS uses the same pins 15/16), " +
-			"and that the Serial module is enabled in PROTO mode at this baud rate"
+		return "nothing arrived from the radio: check the RAK TXD1 -> Pi pin 10 wire and that nothing else " +
+			"drives that pin (the WM1302 HAT's GPS does), that the radio's GPS mode is NOT_PRESENT " +
+			"(the RAK4631 GPS uses the same pins 15/16), and that the Serial module is enabled in PROTO mode at this baud rate"
 	case rxFrames == 0:
 		return "data arrives but no Meshtastic API frames: check the Serial module is in PROTO mode, " +
-			"the baud rates match, and the radio's GPS mode is NOT_PRESENT"
+			"the baud rates match, the radio's GPS mode is NOT_PRESENT, and no other device (such as a GPS) shares the line"
 	default:
 		return "API frames arrive but the handshake never completes, so data is being lost: " +
 			"check no other program (a login console, gpsd) reads the serial port"

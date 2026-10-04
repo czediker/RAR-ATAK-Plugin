@@ -13,8 +13,8 @@
 //	rar-meshtest
 //	/etc/init.d/rar-bridge start
 //
-// rar-meshtest -loopback tests the Pi's UART on its own: unplug the radio and
-// connect Pi pin 8 straight to pin 10.
+// rar-meshtest -loopback -serial /dev/ttyAMA0 tests the Pi's UART on its
+// own: unplug the radio and connect Pi pin 8 straight to pin 10.
 package main
 
 import (
@@ -26,6 +26,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strconv"
 	"strings"
@@ -42,13 +43,13 @@ var version = "dev"
 
 func main() {
 	var (
-		serialDev = flag.String("serial", "/dev/ttyAMA0", "serial device connected to the RAK4631")
-		baud      = flag.Int("baud", 115200, "serial baud rate (must match the Meshtastic Serial module)")
+		serialDev = flag.String("serial", configured("serial_device", "/dev/ttyACM0"), "serial device connected to the RAK4631 (default: rar-bridge's setting)")
+		baud      = flag.Int("baud", configuredInt("baud", 115200), "serial baud rate, must match the Meshtastic Serial module (default: rar-bridge's setting)")
 		channel   = flag.Uint("channel", 0, "channel index to send on (0 = the radio's primary channel)")
 		count     = flag.Int("count", 10, "number of messages to send")
 		interval  = flag.Duration("interval", 5*time.Second, "pause between messages")
 		connectTO = flag.Duration("connect-timeout", 30*time.Second, "how long to wait for the radio to answer")
-		loop      = flag.Bool("loopback", false, "test only the Pi's UART: radio unplugged, Pi pin 8 wired to pin 10")
+		loop      = flag.Bool("loopback", false, "test only the Pi's UART (with -serial /dev/ttyAMA0): radio unplugged, Pi pin 8 wired to pin 10")
 		verbose   = flag.Bool("v", false, "show client logs")
 		showVer   = flag.Bool("version", false, "print version and exit")
 	)
@@ -212,11 +213,14 @@ func run(ctx context.Context, r radio, info *radioInfo, opt options, out io.Writ
 			}
 		}
 		fmt.Fprint(out, `  Check:
+  - by USB: the cable, and that -serial names the RAK's device (dmesg | grep ttyACM)
+  On the UART (pins 8/10):
+  - nothing else is wired to pins 8/10 (the WM1302 HAT's GPS is: use USB)
   - the RAK4631 Serial module is enabled in PROTO mode with rxd 15 / txd 16
   - the RAK4631 GPS mode is NOT_PRESENT (its GPS driver uses the same pins)
   - the baud rate matches (-baud) and Pi TX/RX go to RAK RXD1/TXD1 (crossed), grounds joined
   - no Linux console or login is running on the UART (cmdline.txt, /etc/inittab)
-  - the Pi's UART on its own: rar-meshtest -loopback (radio unplugged, pin 8 wired to pin 10)
+  - the Pi's UART on its own: rar-meshtest -loopback -serial /dev/ttyAMA0 (radio unplugged, pin 8 wired to pin 10)
 `)
 		return 2
 	}
@@ -348,6 +352,23 @@ func truncate(b []byte, n int) []byte {
 		return b[:n]
 	}
 	return b
+}
+
+// configured returns a rar-bridge setting from /etc/config/rar, or def when
+// it is unset or uci is not available.
+func configured(option, def string) string {
+	out, err := exec.Command("uci", "-q", "get", "rar.bridge."+option).Output()
+	if v := strings.TrimSpace(string(out)); err == nil && v != "" {
+		return v
+	}
+	return def
+}
+
+func configuredInt(option string, def int) int {
+	if n, err := strconv.Atoi(configured(option, "")); err == nil {
+		return n
+	}
+	return def
 }
 
 // waitFor polls cond until it is true, the timeout passes or ctx ends.

@@ -15,11 +15,12 @@ import (
 // the serial port.
 var ErrPortBusy = errors.New("serial port is in use by another program")
 
-// ErrHangup is returned when the kernel hangs up the serial port under us.
-// It does that when a session that uses the port as its terminal ends:
-// typically a login console on the UART.
-var ErrHangup = errors.New("serial port was hung up by the kernel: " +
-	"a login console or other terminal session on this port ended; " +
+// ErrHangup is returned when the serial port reports end of file under us.
+// On a UART the kernel does that when a session using the port as its
+// terminal ends (a login console); on USB, when the device is unplugged.
+// Another program using the same port can also cause it.
+var ErrHangup = errors.New("serial port was hung up: a login session on it ended, " +
+	"the USB device was unplugged, or another program is using the port; " +
 	"see the 'serial port problem' warnings")
 
 // SerialOpener returns an Opener for a serial device (8N1, no flow control).

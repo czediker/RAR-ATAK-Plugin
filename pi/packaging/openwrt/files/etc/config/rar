@@ -10,9 +10,11 @@ config global 'global'
 
 config bridge 'bridge'
 	option enabled '1'
-	# RAK4631 on the Pi UART (pins 8/10). The RAK's Meshtastic Serial
-	# module must be enabled in PROTO mode at the same baud rate.
-	option serial_device '/dev/ttyAMA0'
+	# RAK4631 serial device. USB: /dev/ttyACM0 (required with the WM1302
+	# HAT, whose GPS uses the Pi's UART). UART on pins 8/10: /dev/ttyAMA0,
+	# with the RAK's Serial module in PROTO mode at this baud rate (the
+	# baud rate does not matter over USB).
+	option serial_device '/dev/ttyACM0'
 	option baud '115200'
 	# Meshtastic channel index used for TAK traffic, and hop limit
 	# (0 = use the radio's configured hop limit).
