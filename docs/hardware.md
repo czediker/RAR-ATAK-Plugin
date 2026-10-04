@@ -99,8 +99,12 @@ dtoverlay=disable-bt
 
 This does not affect the onboard Wi-Fi access point.
 
-The UART must not also be the Linux console, or kernel messages and a login
-prompt will be sent to the RAK4631:
+The UART must not also be the Linux console. If it is, kernel messages
+and a login prompt go to the RAK4631, and the radio's replies go to the
+login prompt, which takes them as keystrokes. Each time that login session
+ends, the kernel hangs up the port. The bridge then logs
+`serial port was hung up by the kernel` (older versions:
+`read: Port has been closed`) and reconnects, over and over. To prevent it:
 
 * delete the `console=serial0,115200` (or `console=ttyAMA0,...`) entry from
   `cmdline.txt` in the boot partition. Delete only that entry; do not
@@ -120,13 +124,28 @@ prompt will be sent to the RAK4631:
 
   `console=tty1` (the HDMI screen) stays. If the serial entry was the only
   `console=` on your line, put `console=tty1` in its place;
-* make sure `/etc/inittab` has no login on `ttyAMA0` (OpenWrt's
-  `::askconsole:` line follows the kernel console, so it moves off the UART
-  once the console is removed).
+* make sure `/etc/inittab` has no login on `ttyAMA0`, `ttyS0` or `serial0`
+  (OpenWrt's `::askconsole:` line follows the kernel console, so it moves
+  off the UART once the console is removed).
 
-Check after a reboot: `dmesg | grep ttyAMA0` should show the PL011 UART,
-and `logread -e rar-bridge` should report `radio ready` with the RAK's node
-ID.
+Reboot, then confirm on the radio that the change took effect:
+
+```sh
+cat /proc/cmdline                   # the line the Pi booted with: no console=ttyAMA0 / serial0 / ttyS0
+cat /sys/class/tty/console/active   # the kernel's consoles, e.g. "tty1": must not list ttyAMA0
+grep -v '^#' /etc/inittab           # no line naming ttyAMA0, ttyS0 or serial0
+mount | grep mmcblk0p1              # where the boot partition is mounted (normally /boot)
+```
+
+If `/proc/cmdline` still shows the serial console, the edited
+`cmdline.txt` isn't the one the Pi boots from. Edit the copy on the boot
+partition: `mount /dev/mmcblk0p1 /mnt` if it isn't mounted, then edit
+`/mnt/cmdline.txt`. `rar-bridge` also checks for this at startup, and again
+whenever the radio is disconnected. Problems appear in the log as
+`serial port problem: …`, naming the process that is on the port.
+
+When it's right, `logread -e rar-bridge` reports `radio ready` with the
+RAK's node ID.
 
 ### UART link test (`rar-meshtest`)
 

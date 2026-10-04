@@ -90,10 +90,6 @@ func main() {
 		log.Warn("HaLow interface not configured; counting batman-adv neighbors on every interface")
 	}
 
-	for _, p := range uartcheck.Check(*serialDev) {
-		log.Warn("serial port problem: "+p, "serial", *serialDev)
-	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -118,6 +114,7 @@ func main() {
 		radio.Run(ctx)
 		close(radioDone)
 	}()
+	go watchPort(ctx, *serialDev, radio, log)
 
 	reports := make(chan halow.Report, 1)
 	mon := &halow.Monitor{
@@ -187,6 +184,34 @@ func main() {
 
 // Compile-time check that the client satisfies the bridge's interface.
 var _ bridge.Radio = (*meshtastic.Client)(nil)
+
+// watchPort reports anything on the Pi that interferes with the radio's
+// serial port: at startup, then every 30 s while the radio is not connected
+// (a login console is respawned with a new PID each time its session ends).
+func watchPort(ctx context.Context, device string, radio *meshtastic.Client, log *slog.Logger) {
+	var last string
+	t := time.NewTicker(30 * time.Second)
+	defer t.Stop()
+	for first := true; ; first = false {
+		if first || !radio.Status().Connected {
+			problems := uartcheck.Check(device)
+			if cur := strings.Join(problems, "\n"); cur != last {
+				for _, p := range problems {
+					log.Warn("serial port problem: "+p, "serial", device)
+				}
+				if len(problems) == 0 {
+					log.Info("serial port problems cleared", "serial", device)
+				}
+				last = cur
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
 
 func parseLevel(s string) slog.Level {
 	switch strings.ToLower(s) {

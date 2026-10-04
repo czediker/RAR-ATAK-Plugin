@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync/atomic"
 
 	"go.bug.st/serial"
 	"golang.org/x/sys/unix"
@@ -13,6 +14,13 @@ import (
 // ErrPortBusy is returned when another program (normally rar-bridge) holds
 // the serial port.
 var ErrPortBusy = errors.New("serial port is in use by another program")
+
+// ErrHangup is returned when the kernel hangs up the serial port under us.
+// It does that when a session that uses the port as its terminal ends:
+// typically a login console on the UART.
+var ErrHangup = errors.New("serial port was hung up by the kernel: " +
+	"a login console or other terminal session on this port ended; " +
+	"see the 'serial port problem' warnings")
 
 // SerialOpener returns an Opener for a serial device (8N1, no flow control).
 //
@@ -48,11 +56,24 @@ func SerialOpener(device string, baud int) Opener {
 
 type lockedPort struct {
 	serial.Port
-	lock *os.File
+	lock   *os.File
+	closed atomic.Bool
+}
+
+// Read reports a hangup as ErrHangup. The serial library calls it "port
+// has been closed", which reads as if this program had closed it.
+func (l *lockedPort) Read(p []byte) (int, error) {
+	n, err := l.Port.Read(p)
+	var pe *serial.PortError
+	if err != nil && !l.closed.Load() && errors.As(err, &pe) && pe.Code() == serial.PortClosed {
+		return n, ErrHangup
+	}
+	return n, err
 }
 
 // Close closes the port and releases the lock.
 func (l *lockedPort) Close() error {
+	l.closed.Store(true)
 	err := l.Port.Close()
 	l.lock.Close()
 	return err

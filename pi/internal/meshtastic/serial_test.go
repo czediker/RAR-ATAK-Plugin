@@ -88,3 +88,55 @@ func TestSerialOpenerLocksPort(t *testing.T) {
 	}
 	again.Close()
 }
+
+// TestSerialHangup checks that a kernel hangup of the port (what happens to
+// a UART when a login session on it ends) is reported as ErrHangup, and
+// that our own Close is not.
+func TestSerialHangup(t *testing.T) {
+	master, slave := openPTY(t)
+	defer master.Close()
+
+	port, err := SerialOpener(slave, 115200)()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer port.Close()
+	readErr := make(chan error, 1)
+	go func() {
+		_, err := port.Read(make([]byte, 16))
+		readErr <- err
+	}()
+
+	f, err := os.OpenFile(slave, os.O_RDWR|unix.O_NOCTTY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := unix.IoctlSetInt(int(f.Fd()), unix.TIOCVHANGUP, 0); err != nil {
+		t.Skipf("cannot hang up a tty here: %v", err)
+	}
+	select {
+	case err := <-readErr:
+		if !errors.Is(err, ErrHangup) {
+			t.Fatalf("read after hangup: %v, want ErrHangup", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("read did not return after hangup")
+	}
+
+	// Closing it ourselves is not a hangup.
+	port.Close()
+	again, err := SerialOpener(slave, 115200)()
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		_, err := again.Read(make([]byte, 16))
+		readErr <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	again.Close()
+	if err := <-readErr; errors.Is(err, ErrHangup) {
+		t.Errorf("own close reported as hangup: %v", err)
+	}
+}

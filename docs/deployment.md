@@ -195,7 +195,8 @@ Pi; whether ATAK showed it is visible on the phone.
 | Symptom | Check |
 |---------|-------|
 | `no config response from radio` in the log | Read `received_bytes` and `hint` in the same line. `received_bytes=0` means nothing comes back from the radio: set the RAK's GPS mode to `NOT_PRESENT` and check the RAK TXD1 → Pi pin 10 wire. Otherwise: Serial module not in PROTO mode, wrong baud, RX/TX swapped, or a console still on `ttyAMA0`. See [the UART link test](hardware.md#uart-link-test-rar-meshtest) |
-| `serial port problem: …` at startup | A Linux console is on the radio's UART, or another program has it open (named in the line) |
+| `serial port was hung up by the kernel` (older versions: `read: Port has been closed`), repeating | A login console runs on the radio's UART; each time its session ends the kernel hangs up the port. Remove the serial console and confirm with `cat /proc/cmdline` after a reboot — see [the console section](hardware.md#pi-4-put-the-full-uart-on-pins-810) |
+| `serial port problem: …` | A Linux console or login is on the radio's UART, or another program has it open (named in the line). Logged at startup and while the radio is disconnected |
 | A phone connected to the radio over Bluetooth drops when the UART is connected | Expected with Meshtastic firmware 2.7.x and older: the radio turns Bluetooth off while the bridge is connected. It also shows that the Pi → radio direction works. Stop `rar-bridge` to use the phone app — see [Bluetooth while the bridge is connected](hardware.md#bluetooth-while-the-bridge-is-connected) |
 | LED always green with neighbors present | `halow_iface` wrong; run `batctl meshif bat0 neighbors_json` and compare `hard_ifname` |
 | Remote users never appear | Radios on different Meshtastic channels/keys; with `global.debug=1` every received packet is logged (undecryptable ones too) |

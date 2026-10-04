@@ -198,7 +198,7 @@ func run(ctx context.Context, r radio, info *radioInfo, opt options, out io.Writ
 		if st.LastError != "" {
 			fmt.Fprintf(out, "  Last error: %s\n", st.LastError)
 		}
-		if !strings.HasPrefix(st.LastError, "open") {
+		if !strings.HasPrefix(st.LastError, "open") && !strings.Contains(st.LastError, "hung up") {
 			// The port opened: what came back says which side to look at.
 			fmt.Fprintf(out, "  Received from the radio: %d bytes, %d API frames\n  -> %s\n",
 				st.RxBytes, st.RxFrames, meshtastic.LinkHint(st.RxBytes, st.RxFrames))
