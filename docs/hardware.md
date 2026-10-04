@@ -4,72 +4,133 @@
 
 | Physical pin | BCM GPIO | Used by |
 |--------------|----------|---------|
-| 19, 21, 23, 24 | 10, 9, 11, 8 | HaLow HAT (SPI0) |
-| 11, 29 | 17, 5 | WM1302 HAT reset lines (check your HAT revision for others) |
+| 24, 21, 19, 23 | 8, 9, 10, 11 | WM1302 HAT: HaLow radio SPI0 (CE0, MISO, MOSI, SCLK) |
+| 11, 29, 16, 18 | 17, 5, 23, 24 | WM1302 HAT: HaLow radio reset, interrupt, wake, busy (openMANET's `mm610x-spi` overlay) |
 | 8, 10 | 14 (TXD), 15 (RXD) | WM1302 HAT's GPS (Quectel L76K), read by openMANET's gpsd as `/dev/ttyAMA0` |
-| 32, 22 | 12, 25 | WM1302 HAT GPS wake / reset (openMANET's `gpsboard` script) |
+| 32, 22 | 12, 25 | WM1302 HAT's GPS wake / reset (openMANET's `gpsboard` script) |
+| **27** | **0 (TXD2)** | → RAK4631 RXD1 (uart2) |
+| **28** | **1 (RXD2)** | ← RAK4631 TXD1 (uart2) |
 | **36** | **16** | LED red anode (reserved, held off) |
 | **38** | **20** | LED green anode (Meshtastic) |
 | **40** | **21** | LED blue anode (HaLow) |
 | 39 (or any ground) | — | LED common cathode |
+| 6, 9, 14, 20, 25, 30, 34 | — | Ground (one to the RAK4631) |
 
-GPIO 16/20/21 avoid the HaLow HAT's SPI/reset/IRQ pins, the HAT's GPS, the
-UART and I²C. They can be changed with `uci set rar.led.red=...` etc.
+GPIO 16/20/21 avoid the HaLow radio, the HAT's GPS, the UARTs and I²C. They
+can be changed with `uci set rar.led.red=...` etc.
 
-## Connecting the RAK4631
+## Connecting the RAK4631 (uart2, pins 27/28)
 
-**With the Seeed WM1302 Pi HAT, connect the RAK4631 by USB.** The HAT has
-its own GPS receiver, a Quectel L76K, wired to the Pi's UART on pins 8 and
-10. Seeed reads it with `cat /dev/ttyAMA0`
+The Pi's primary UART (pins 8/10, `/dev/ttyAMA0`) belongs to the WM1302
+HAT's own GPS, a Quectel L76K. Seeed reads it with `cat /dev/ttyAMA0`
 ([WM1302 Pi HAT wiki](https://wiki.seeedstudio.com/WM1302_Pi_HAT/)), and
-openMANET configures gpsd on `/dev/ttyAMA0` for it. A RAK4631 wired to the
-same pins competes with the GPS:
+openMANET runs gpsd on it. A RAK4631 on those pins fights the GPS for pin
+10, so the radio's replies are lost, and gpsd takes the radio's data. The
+bridge reports that as `serial port problem: process … (gpsd) has
+/dev/ttyAMA0 open`.
 
-* the GPS and the RAK both drive pin 10, so the radio's replies are garbled
-  or lost (the radio still hears the Pi);
-* gpsd reads the radio's data and changes the port's baud rate while it
-  looks for a GPS.
+The Pi 4 has four more full UARTs (uart2–uart5), each available on one
+fixed pair of header pins through a `config.txt` overlay. With the
+WM1302 HAT fitted:
 
-The bridge reports it as `serial port problem: process … (gpsd) has
-/dev/ttyAMA0 open`. Nothing in software fixes it, because the GPS is still
-wired to pin 10.
+| UART | Pins (GPIO) | With the WM1302 HAT |
+|------|-------------|---------------------|
+| uart2 | 27 / 28 (0 / 1) | **Free**, unless the HAT has an ID EEPROM on them (check below) |
+| uart3 | 7 / 29 (4 / 5) | GPIO5 is the HaLow radio's interrupt line |
+| uart4 | 24 / 21 (8 / 9) | HaLow radio SPI |
+| uart5 | 32 / 33 (12 / 13) | GPIO12 is the HAT GPS's wake line (see the fallback below) |
 
-### USB (recommended)
+### 1. Check that pins 27/28 are free
 
-1. Plug the RAK4631's USB-C port into a USB port on the Pi, and remove any
-   wires between the RAK and pins 8/10. The Pi also powers the RAK.
-2. Find the device: `dmesg | grep ttyACM` (normally `/dev/ttyACM0`). If
-   nothing appears, install the USB serial driver:
-   `opkg update && opkg install kmod-usb-acm`.
-3. Point the bridge at it:
-   ```sh
-   uci set rar.bridge.serial_device='/dev/ttyACM0'; uci commit rar   # the bridge restarts
-   ```
-4. On the radio, the Serial module isn't needed for USB. Turn it off so it
-   doesn't drive the UART pins: `meshtastic --set serial.enabled false`.
+GPIO 0/1 are reserved for a HAT identification EEPROM. On the radio,
+before enabling uart2:
 
-Leave openMANET's gpsd and the HAT's GPS as they are; the USB connection
-doesn't need the `config.txt` or `cmdline.txt` changes below. If another
-USB serial device is plugged in (a USB GPS, for example), the `ttyACM`
-number can change; check `dmesg`. `rar-meshtest` uses the bridge's
-configured device by default.
+```sh
+ls /proc/device-tree/hat 2>/dev/null || echo "no HAT EEPROM"
+gpioget -c gpiochip0 -b pull-down 0 1      # expect both inactive (low)
+gpioget -c gpiochip0 -b pull-up 0 1        # expect both active (high)
+```
 
-### UART on pins 8/10 (only without a GPS on the Pi's UART)
+If there's no HAT EEPROM and the pins follow the pull-down and pull-up,
+nothing on the HAT uses them. If `/proc/device-tree/hat` exists or the
+pins read high even with the pull-down, the HAT has an EEPROM with
+pull-ups there; use the fallback below.
 
-Use this only if nothing else is wired to pins 8 and 10. That rules out the
-WM1302 Pi HAT, because of its GPS.
+### 2. Enable uart2
 
-Wiring (both sides are 3.3 V logic):
+Add to the end of `/boot/config.txt` (the boot partition; see
+`mount | grep mmcblk0p1`):
 
-* Pi pin 8 (GPIO14 TXD) → RAK4631 **RXD1** (nRF52 P0.15)
-* Pi pin 10 (GPIO15 RXD) ← RAK4631 **TXD1** (nRF52 P0.16)
+```ini
+[all]
+dtoverlay=uart2
+force_eeprom_read=0
+```
+
+`force_eeprom_read=0` stops the boot firmware from probing GPIO 0/1 for an
+EEPROM, which would otherwise toggle the lines going to the RAK at every
+boot. Reboot, then find uart2's device name. uart2's hardware address is
+`fe201400`, and it is normally `/dev/ttyAMA2`:
+
+```sh
+dmesg | grep fe201400      # fe201400.serial: ttyAMA2 at MMIO 0xfe201400 ...
+```
+
+### 3. Test the UART alone, then wire the radio
+
+With the RAK unplugged, join pins 27 and 28 with a jumper wire and run
+`rar-meshtest -loopback -serial /dev/ttyAMA2`. On PASS, remove the jumper
+and wire the radio (both sides are 3.3 V logic):
+
+* Pi pin 27 (GPIO0, TXD2) → RAK4631 **RXD1** (nRF52 P0.15)
+* Pi pin 28 (GPIO1, RXD2) ← RAK4631 **TXD1** (nRF52 P0.16)
 * Ground ↔ ground
 
-#### Meshtastic settings for the UART
+New installs use `/dev/ttyAMA2`. On an existing install:
 
-The bridge talks to the radio with the Meshtastic protobuf API. Over USB
-that needs no settings. On its UART, the RAK provides it only when the
-**Serial module runs in PROTO mode**:
+```sh
+uci set rar.bridge.serial_device='/dev/ttyAMA2'; uci commit rar   # the bridge restarts
+```
+
+Leave openMANET's gpsd and the HAT's GPS on `/dev/ttyAMA0` as they are.
+uart2 never carries a Linux console, so the console steps below apply only
+to the primary UART.
+
+### Fallback: uart5 on pins 32/33 (gives up the HAT's GPS)
+
+If pins 27/28 aren't free, use uart5 (GPIO 12/13). GPIO12 is the HAT GPS's
+wake line, so the HAT's GPS has to be switched off:
+
+1. Check that nothing drives GPIO13, before enabling uart5:
+   `gpioget -c gpiochip0 -b pull-down 13` then `-b pull-up 13`; it should
+   follow both.
+2. Stop openMANET's GPS:
+   ```sh
+   /etc/init.d/gpsboard.init disable; /etc/init.d/gpsboard.init stop
+   pkill -f "gpioset.*12=" ; pkill -f "gpioset.*25="
+   uci set gpsd.core.enabled=0; uci commit gpsd; /etc/init.d/gpsd stop
+   ```
+   Then set openMANET's position source to the ATAK phone: in the Web UI
+   GPS page, choose **External · EUD (ATAK) via CoT**.
+3. Add `dtoverlay=uart5` under `[all]` in `/boot/config.txt` and reboot.
+   uart5's hardware address is `fe201a00`, normally `/dev/ttyAMA5`; check
+   with `dmesg | grep fe201a00`.
+4. Wire Pi pin 32 (GPIO12, TXD5) → RAK RXD1 and Pi pin 33 (GPIO13, RXD5) ←
+   RAK TXD1, then set `rar.bridge.serial_device` to that device.
+
+The HAT GPS's wake input stays connected to pin 32 and follows the UART's
+transmit line, which idles high and so keeps the unused GPS in standby.
+
+Other ways to free a UART need hardware changes: disconnecting the HAT
+GPS's lines from pins 8/10 (see Seeed's schematic for that HAT revision),
+or adding an I²C-to-UART bridge chip such as the SC16IS752. The bridge
+also works over USB (`/dev/ttyACM0`) where there's room for it.
+
+### Meshtastic settings on the RAK4631
+
+The bridge talks to the radio with the Meshtastic protobuf API, which the
+RAK provides on its UART only when the **Serial module runs in PROTO
+mode**:
 
 | Setting | Value |
 |---------|-------|
@@ -103,7 +164,7 @@ wire the Pi to RXD0/TXD0.)
 
 ### Bluetooth while the bridge is connected
 
-When `rar-bridge` (or `rar-meshtest`) connects over USB or the UART, the
+When `rar-bridge` (or `rar-meshtest`) connects over the UART (or USB), the
 radio treats it as an app connected over serial:
 
 * **Firmware 2.7.x and older turn Bluetooth off while a serial app is
@@ -130,7 +191,8 @@ channel used for TAK traffic, and use the default LoRa hop limit or set
 
 ### Pi 4: put the full UART on pins 8/10
 
-UART connection only. On a Pi 4, `/dev/ttyAMA0` (PL011) drives Bluetooth by default. In the boot
+Only for builds without the WM1302 HAT's GPS, using the primary UART for
+the RAK. On a Pi 4, `/dev/ttyAMA0` (PL011) drives Bluetooth by default. In the boot
 partition's `config.txt` (on OpenWrt usually `/boot/config.txt`):
 
 ```ini
@@ -229,22 +291,22 @@ the way: a Linux console on the port, or another program with it open.
 FAIL: no answer from the radio within 30s.
   Last error: no config response from radio (0 bytes, 0 API frames received in 20s)
   Received from the radio: 0 bytes, 0 API frames
-  -> nothing arrived from the radio: check the RAK TXD1 -> Pi pin 10 wire, ...
+  -> nothing arrived from the radio: check the RAK TXD1 -> Pi RX wire, ...
 ```
 
 | Received from the radio | Meaning |
 |-------------------------|---------|
-| 0 bytes | Nothing arrives from the radio. If a phone was dropped from Bluetooth at the same moment (firmware 2.7.x and older), the radio hears the Pi, so only the radio → Pi direction is broken: GPS mode not `NOT_PRESENT`, or the RAK TXD1 → Pi pin 10 wire. Otherwise also check the Serial module settings and the Pi → RAK wire |
+| 0 bytes | Nothing arrives from the radio. If a phone was dropped from Bluetooth at the same moment (firmware 2.7.x and older), the radio hears the Pi, so only the radio → Pi direction is broken: GPS mode not `NOT_PRESENT`, the RAK TXD1 → Pi RX wire (pin 28 for uart2), or something else driving that pin (the HAT's GPS drives pin 10). Otherwise also check the Serial module settings and the Pi → RAK wire |
 | bytes, 0 API frames | The baud rate doesn't match, the Serial module isn't in PROTO mode, or the radio's GPS driver is also using the pins |
 | API frames, but no handshake | Data is being lost: another program on the Pi is reading the port (a login console, gpsd) |
 
-To test the Pi's UART on its own, unplug the radio, connect Pi pin 8
-directly to pin 10 with a jumper wire, and run the commands below. This
-can't pass with the WM1302 HAT fitted, because its GPS also drives pin 10.
+To test the Pi's UART on its own, unplug the radio, join the UART's TX and
+RX pins with a jumper wire (pins 27 and 28 for uart2), and run the commands
+below.
 
 ```sh
 /etc/init.d/rar-bridge stop
-rar-meshtest -loopback -serial /dev/ttyAMA0   # PASS = the Pi's UART works; any fault is on the radio side
+rar-meshtest -loopback          # PASS = the Pi's UART works; any fault is on the radio side
 ```
 
 ## RGB LED (common cathode)

@@ -29,7 +29,7 @@ func main() {
 	def := bridge.DefaultConfig()
 	var (
 		// Meshtastic radio.
-		serialDev = flag.String("serial", "/dev/ttyACM0", "serial device connected to the RAK4631 (USB; /dev/ttyAMA0 for the UART)")
+		serialDev = flag.String("serial", "/dev/ttyAMA2", "serial device connected to the RAK4631 (uart2 on pins 27/28)")
 		baud      = flag.Int("baud", 115200, "serial baud rate (must match the Meshtastic Serial module)")
 		channel   = flag.Uint("channel", 0, "Meshtastic channel index to transmit on")
 		hopLimit  = flag.Uint("hop-limit", 0, "hop limit for transmitted packets (0 = device setting)")

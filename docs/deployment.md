@@ -4,14 +4,12 @@
 
 1. Flash the current openMANET image for the Pi 4 + WM6108 (SPI) and run its
    setup wizard.
-2. Connect the RAK4631. With the Seeed WM1302 Pi HAT, use **USB**: the
-   HAT's GPS already occupies the Pi's UART (pins 8/10). New installs use
-   `/dev/ttyACM0`; an existing install needs
-   `uci set rar.bridge.serial_device='/dev/ttyACM0'; uci commit rar`. See
-   [hardware.md](hardware.md#connecting-the-rak4631). Only for a UART
-   connection: configure the RAK's Serial module for PROTO mode with GPS
-   mode `NOT_PRESENT`, and free the Pi UART (`enable_uart=1`,
-   `dtoverlay=disable-bt`, no serial console).
+2. Configure the RAK4631's Serial module for PROTO mode with GPS mode
+   `NOT_PRESENT`, and connect it to **uart2 on Pi pins 27/28**: the WM1302
+   HAT's own GPS occupies the primary UART (pins 8/10). This means checking
+   that the pins are free, adding `dtoverlay=uart2` to `config.txt`, and a
+   loopback test. See
+   [hardware.md](hardware.md#connecting-the-rak4631-uart2-pins-2728).
 3. Optionally add the LED `gpio=` line to `config.txt`; see
    [hardware.md](hardware.md#keep-the-led-off-during-boot). Reboot.
 4. Find the HaLow interface name: `batctl meshif bat0 if` lists the
@@ -84,7 +82,7 @@ uci commit rar
 
 | Option | Default | Meaning |
 |--------|---------|---------|
-| `bridge.serial_device` | `/dev/ttyACM0` | Serial device of the RAK4631: USB (needed with the WM1302 HAT), or `/dev/ttyAMA0` for the UART on pins 8/10 |
+| `bridge.serial_device` | `/dev/ttyAMA2` | Serial device of the RAK4631: uart2 on pins 27/28 (check with `dmesg \| grep fe201400`) |
 | `bridge.baud` | `115200` | Must match the Meshtastic Serial module |
 | `bridge.channel` | `0` | Meshtastic channel index for TAK traffic |
 | `bridge.hop_limit` | `0` | 0 = the radio's own LoRa hop limit |
@@ -198,9 +196,9 @@ Pi; whether ATAK showed it is visible on the phone.
 
 | Symptom | Check |
 |---------|-------|
-| `serial port problem: process … (gpsd) has /dev/ttyAMA0 open` | The WM1302 HAT's GPS is wired to the same UART pins, and openMANET's gpsd reads it. Connect the RAK4631 by USB instead — see [Connecting the RAK4631](hardware.md#connecting-the-rak4631) |
-| `no config response from radio` in the log | Read `received_bytes` and `hint` in the same line. `received_bytes=0` means nothing comes back from the radio: on the UART, check nothing else is wired to pin 10 (the WM1302 HAT's GPS is), set the RAK's GPS mode to `NOT_PRESENT`, and check the RAK TXD1 → Pi pin 10 wire. Otherwise: Serial module not in PROTO mode, wrong baud, RX/TX swapped, or a console still on `ttyAMA0`. See [the UART link test](hardware.md#uart-link-test-rar-meshtest) |
-| `serial port was hung up` (older versions: `read: Port has been closed`), repeating | Another program or a login console is using the radio's port; the `serial port problem` lines name it. A login console on the UART: remove the serial console and confirm with `cat /proc/cmdline` after a reboot, see [the console section](hardware.md#pi-4-put-the-full-uart-on-pins-810). gpsd: see the row above. On USB it also means the cable was unplugged |
+| `serial port problem: process … (gpsd) has /dev/ttyAMA0 open` | The WM1302 HAT's GPS is wired to the primary UART (pins 8/10), and openMANET's gpsd reads it. Move the RAK4631 to uart2 on pins 27/28 — see [Connecting the RAK4631](hardware.md#connecting-the-rak4631-uart2-pins-2728) |
+| `no config response from radio` in the log | Read `received_bytes` and `hint` in the same line. `received_bytes=0` means nothing comes back from the radio: check nothing else is wired to the Pi's RX pin (the WM1302 HAT's GPS is on pin 10), set the RAK's GPS mode to `NOT_PRESENT`, and check the RAK TXD1 → Pi RX wire (pin 28 for uart2). Otherwise: Serial module not in PROTO mode, wrong baud, RX/TX swapped, or a console still on `ttyAMA0`. See [the UART link test](hardware.md#uart-link-test-rar-meshtest) |
+| `serial port was hung up` (older versions: `read: Port has been closed`), repeating | Another program or a login console is using the radio's port; the `serial port problem` lines name it. A login console on the UART: remove the serial console and confirm with `cat /proc/cmdline` after a reboot, see [the console section](hardware.md#pi-4-put-the-full-uart-on-pins-810). gpsd: see the row above |
 | `serial port problem: …` | A Linux console or login is on the radio's UART, or another program has it open (named in the line). Logged at startup and while the radio is disconnected |
 | A phone connected to the radio over Bluetooth drops when the bridge connects | Expected with Meshtastic firmware 2.7.x and older: the radio turns Bluetooth off while the bridge is connected. It also shows that the Pi → radio direction works. Stop `rar-bridge` to use the phone app — see [Bluetooth while the bridge is connected](hardware.md#bluetooth-while-the-bridge-is-connected) |
 | LED always green with neighbors present | `halow_iface` wrong; run `batctl meshif bat0 neighbors_json` and compare `hard_ifname` |

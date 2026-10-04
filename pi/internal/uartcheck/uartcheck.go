@@ -61,7 +61,7 @@ func check(s system, real string, rdev uint64, self int) []string {
 			msg := fmt.Sprintf("process %d (%s) has %s open and will take data meant for the bridge", p.pid, p.name, real)
 			if p.name == "gpsd" {
 				msg += "; gpsd is a GPS daemon, so a GPS receiver is probably wired to this port too " +
-					"(the Seeed WM1302 Pi HAT's GPS uses the Pi's UART, pins 8/10): connect the RAK4631 by USB instead"
+					"(the Seeed WM1302 Pi HAT's GPS uses the primary UART, pins 8/10): move the RAK4631 to uart2 on pins 27/28"
 			}
 			problems = append(problems, msg)
 		}

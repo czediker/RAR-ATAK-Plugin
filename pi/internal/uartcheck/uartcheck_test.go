@@ -86,7 +86,7 @@ func TestFindsConsoleAndHolders(t *testing.T) {
 		t.Fatalf("problems = %q", got)
 	}
 	all := strings.Join(got, "\n")
-	for _, want := range []string{"console=serial0,115200", "process 100 (getty) has", "process 200 (gpsd) has", "connect the RAK4631 by USB"} {
+	for _, want := range []string{"console=serial0,115200", "process 100 (getty) has", "process 200 (gpsd) has", "move the RAK4631 to uart2"} {
 		if !strings.Contains(all, want) {
 			t.Errorf("missing %q in:\n%s", want, all)
 		}

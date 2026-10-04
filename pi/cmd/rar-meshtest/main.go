@@ -13,8 +13,9 @@
 //	rar-meshtest
 //	/etc/init.d/rar-bridge start
 //
-// rar-meshtest -loopback -serial /dev/ttyAMA0 tests the Pi's UART on its
-// own: unplug the radio and connect Pi pin 8 straight to pin 10.
+// rar-meshtest -loopback tests the Pi's UART on its own: unplug the radio
+// and wire the UART's TX pin straight to its RX pin (pins 27 and 28 for
+// uart2).
 package main
 
 import (
@@ -43,13 +44,13 @@ var version = "dev"
 
 func main() {
 	var (
-		serialDev = flag.String("serial", configured("serial_device", "/dev/ttyACM0"), "serial device connected to the RAK4631 (default: rar-bridge's setting)")
+		serialDev = flag.String("serial", configured("serial_device", "/dev/ttyAMA2"), "serial device connected to the RAK4631 (default: rar-bridge's setting)")
 		baud      = flag.Int("baud", configuredInt("baud", 115200), "serial baud rate, must match the Meshtastic Serial module (default: rar-bridge's setting)")
 		channel   = flag.Uint("channel", 0, "channel index to send on (0 = the radio's primary channel)")
 		count     = flag.Int("count", 10, "number of messages to send")
 		interval  = flag.Duration("interval", 5*time.Second, "pause between messages")
 		connectTO = flag.Duration("connect-timeout", 30*time.Second, "how long to wait for the radio to answer")
-		loop      = flag.Bool("loopback", false, "test only the Pi's UART (with -serial /dev/ttyAMA0): radio unplugged, Pi pin 8 wired to pin 10")
+		loop      = flag.Bool("loopback", false, "test only the Pi's UART: radio unplugged, the UART's TX pin wired to its RX pin (pins 27/28 for uart2)")
 		verbose   = flag.Bool("v", false, "show client logs")
 		showVer   = flag.Bool("version", false, "print version and exit")
 	)
@@ -213,14 +214,13 @@ func run(ctx context.Context, r radio, info *radioInfo, opt options, out io.Writ
 			}
 		}
 		fmt.Fprint(out, `  Check:
-  - by USB: the cable, and that -serial names the RAK's device (dmesg | grep ttyACM)
-  On the UART (pins 8/10):
-  - nothing else is wired to pins 8/10 (the WM1302 HAT's GPS is: use USB)
+  - -serial names the RAK's UART (uart2: dmesg | grep fe201400)
+  - nothing else is wired to the UART's pins (the WM1302 HAT's GPS is on pins 8/10: use uart2)
   - the RAK4631 Serial module is enabled in PROTO mode with rxd 15 / txd 16
   - the RAK4631 GPS mode is NOT_PRESENT (its GPS driver uses the same pins)
   - the baud rate matches (-baud) and Pi TX/RX go to RAK RXD1/TXD1 (crossed), grounds joined
   - no Linux console or login is running on the UART (cmdline.txt, /etc/inittab)
-  - the Pi's UART on its own: rar-meshtest -loopback -serial /dev/ttyAMA0 (radio unplugged, pin 8 wired to pin 10)
+  - the Pi's UART on its own: rar-meshtest -loopback (radio unplugged, pins 27 and 28 joined for uart2)
 `)
 		return 2
 	}
@@ -283,12 +283,13 @@ func run(ctx context.Context, r radio, info *radioInfo, opt options, out io.Writ
 	return 1
 }
 
-// loopback checks the Pi's UART on its own, with pin 8 (TXD) wired straight
-// to pin 10 (RXD) and the radio unplugged: what is sent must come straight
+// loopback checks the Pi's UART on its own, with its TX pin wired straight
+// to its RX pin and the radio unplugged: what is sent must come straight
 // back. It closes port and returns the exit code.
 func loopback(port io.ReadWriteCloser, timeout time.Duration, problems []string, out io.Writer) int {
 	pattern := []byte("rar-meshtest loopback 0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ\n")
-	fmt.Fprintln(out, "Loopback test: the radio must be unplugged and Pi pin 8 wired to pin 10.")
+	fmt.Fprintln(out, "Loopback test: the radio must be unplugged and the UART's TX pin wired to its RX pin")
+	fmt.Fprintln(out, "(pins 27 and 28 for uart2, 8 and 10 for the primary UART).")
 	got := make(chan []byte, 1)
 	go func() {
 		var buf []byte
@@ -324,17 +325,17 @@ func loopback(port io.ReadWriteCloser, timeout time.Duration, problems []string,
 		fmt.Fprintf(out, "FAIL: could not write to the port: %v\n", werr)
 		return 2
 	case bytes.Contains(buf, pattern):
-		fmt.Fprint(out, `PASS: the Pi's UART sends on pin 8 and receives on pin 10.
-  Reconnect the radio: Pi pin 8 -> RAK RXD1, Pi pin 10 <- RAK TXD1, ground to ground.
+		fmt.Fprint(out, `PASS: the Pi's UART sends and receives.
+  Reconnect the radio: Pi TX -> RAK RXD1, Pi RX <- RAK TXD1, ground to ground.
   If the radio still does not answer, the problem is on the radio side
   (Serial module settings, GPS mode NOT_PRESENT, the RAK TXD1 wire).
 `)
 		return 0
 	case len(buf) == 0:
 		fmt.Fprint(out, `FAIL: nothing came back.
-  With pins 8 and 10 joined, this means the jumper is not on those pins, or the
-  UART is not routed to them: config.txt needs enable_uart=1 and
-  dtoverlay=disable-bt (reboot after changing it).
+  With TX and RX joined, this means the jumper is on the wrong pins, or the
+  UART is not routed to them: for uart2, config.txt needs dtoverlay=uart2
+  (reboot after changing it), and -serial must name it (dmesg | grep fe201400).
 `)
 		return 1
 	default:
