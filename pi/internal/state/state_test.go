@@ -55,3 +55,24 @@ func TestReadErrors(t *testing.T) {
 		t.Error("expected version error")
 	}
 }
+
+func TestDiff(t *testing.T) {
+	var a, b Snapshot
+	a.Updated = time.Unix(1, 0)
+	a.HaLow.State = HaLowConnected
+	a.HaLow.Neighbors = 2
+	b = a
+	b.Updated = time.Unix(2, 0)
+	if d := Diff(a, b); len(d) != 0 {
+		t.Errorf("only Updated changed, got %v", d)
+	}
+	b.HaLow.State = HaLowIsolated
+	b.HaLow.Neighbors = 0
+	b.Meshtastic.Error = "open: no such file"
+	b.TxCount = 3
+	got := strings.Join(Diff(a, b), "; ")
+	want := `halow.neighbors: 2 → 0; halow.state: connected → isolated; meshtastic.error: "" → open: no such file; tx_count: 0 → 3`
+	if got != want {
+		t.Errorf("Diff =\n%s\nwant\n%s", got, want)
+	}
+}

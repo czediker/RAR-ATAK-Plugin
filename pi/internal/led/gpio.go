@@ -20,9 +20,10 @@ type GPIO struct {
 }
 
 // OpenGPIO requests the red, green and blue lines on chip (e.g.
-// "gpiochip0"). activeLow must be true for a common-anode LED wired
-// directly to the pins (pin low = LED on), and false when the cathodes are
-// switched through transistors (pin high = LED on).
+// "gpiochip0"). For a common-cathode LED with each anode on a pin through a
+// resistor, activeLow is false (pin high = LED on). Set it for a
+// common-anode LED (pin low = LED on). The red line is requested too so it
+// is held off until something uses the red hook.
 func OpenGPIO(chip string, red, green, blue int, activeLow bool) (*GPIO, error) {
 	opts := []gpiocdev.LineReqOption{gpiocdev.WithConsumer("rar-led"), gpiocdev.AsOutput(0, 0, 0)}
 	if activeLow {
@@ -42,7 +43,7 @@ func (g *GPIO) Set(c Color) error {
 
 // Close turns the LED off and releases the lines.
 func (g *GPIO) Close() error {
-	_ = g.Set(Off)
+	_ = g.Set(Color{})
 	return g.lines.Close()
 }
 

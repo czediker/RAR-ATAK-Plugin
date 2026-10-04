@@ -34,13 +34,21 @@ func NewRegistry(ttl time.Duration) *Registry {
 }
 
 // Learn records that addr sent traffic for ATAK UID uid (uid may be empty).
-func (r *Registry) Learn(addr netip.Addr, uid string, now time.Time) {
+// It reports whether the address and the UID were not known before.
+func (r *Registry) Learn(addr netip.Addr, uid string, now time.Time) (newAddr, newUID bool) {
+	r.expire(now)
 	if addr.IsValid() {
-		r.addrs[addr.Unmap()] = now
+		a := addr.Unmap()
+		_, known := r.addrs[a]
+		newAddr = !known
+		r.addrs[a] = now
 	}
 	if uid != "" {
+		_, known := r.uids[uid]
+		newUID = !known
 		r.uids[uid] = now
 	}
+	return newAddr, newUID
 }
 
 // SetLeases replaces the set of addresses taken from DHCP leases.

@@ -14,7 +14,7 @@ opt() {
 
 start_service() {
 	config_load rar
-	local enabled active_low
+	local enabled active_low debug
 	config_get_bool enabled led enabled 1
 	[ "$enabled" = 1 ] || return 0
 
@@ -24,12 +24,16 @@ start_service() {
 	opt red red
 	opt green green
 	opt blue blue
-	config_get_bool active_low led active_low 1
+	opt red_file red-file
+	config_get_bool active_low led active_low 0
 	if [ "$active_low" = 1 ]; then
 		procd_append_param command "-active-low=true"
 	else
 		procd_append_param command "-active-low=false"
 	fi
+
+	config_get_bool debug global debug 0
+	[ "$debug" = 1 ] && procd_append_param command -debug
 
 	procd_set_param respawn 3600 5 0
 	procd_set_param stdout 1

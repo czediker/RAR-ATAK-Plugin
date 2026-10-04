@@ -1,10 +1,12 @@
 package bridge
 
 import (
+	"bytes"
 	"io"
 	"log/slog"
 	"math"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,13 +50,13 @@ type delivery struct {
 
 type fakeDeliverer struct{ got []delivery }
 
-func (f *fakeDeliverer) Deliver(addr netip.Addr, data []byte) error {
+func (f *fakeDeliverer) Deliver(addr netip.Addr, data []byte) (string, error) {
 	ev, err := cot.Parse(data)
 	if err != nil {
 		panic(err)
 	}
 	f.got = append(f.got, delivery{addr, ev})
-	return nil
+	return netip.AddrPortFrom(addr, 4242).String(), nil
 }
 
 var (
@@ -72,11 +74,12 @@ type harness struct {
 	out   *fakeDeliverer
 	euds  *eud.Registry
 	seen  *halowseen.Tracker
+	logs  *bytes.Buffer
 }
 
 func newHarness(link halow.Link) *harness {
-	h := &harness{radio: &fakeRadio{connected: true}, out: &fakeDeliverer{}, euds: eud.NewRegistry(15 * time.Minute), seen: halowseen.NewTracker(time.Minute)}
-	h.b = New(DefaultConfig(), h.radio, h.out, h.euds, h.seen, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	h := &harness{radio: &fakeRadio{connected: true}, out: &fakeDeliverer{}, euds: eud.NewRegistry(15 * time.Minute), seen: halowseen.NewTracker(time.Minute), logs: &bytes.Buffer{}}
+	h.b = New(DefaultConfig(), h.radio, h.out, h.euds, h.seen, slog.New(slog.NewTextHandler(h.logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	if link != halow.LinkUnknown {
 		h.b.SetLink(halow.Report{Link: link, Neighbors: 1})
 	}
@@ -369,4 +372,84 @@ func TestDistance(t *testing.T) {
 	if d := distanceMeters(38.9, -77, 38.9, -77); d != 0 {
 		t.Errorf("zero distance = %v", d)
 	}
+}
+
+func (h *harness) requireLog(t *testing.T, substrs ...string) {
+	t.Helper()
+	for _, sub := range substrs {
+		if !strings.Contains(h.logs.String(), sub) {
+			t.Errorf("log missing %q", sub)
+		}
+	}
+}
+
+func TestRadioAcks(t *testing.T) {
+	h := newHarness(halow.LinkIsolated)
+	h.b.HandleEUD(PortAuto, phone, chat("one"), at(0))
+	h.b.HandleEUD(PortAuto, phone, chat("two"), at(0))
+	h.b.HandleEUD(PortAuto, phone, chat("three"), at(0))
+	h.b.Tick(at(0))
+	h.b.HandleAck(&meshpb.QueueStatus{MeshPacketId: 1, Free: 15, Maxlen: 16}, at(0.2))
+	if s := h.b.Snapshot(at(1)); s.Meshtastic.Fault {
+		t.Fatalf("accepted packet should not fault: %+v", s.Meshtastic)
+	}
+	h.requireLog(t, "Meshtastic radio accepted the message for transmission")
+
+	h.b.Tick(at(3))
+	h.b.HandleAck(&meshpb.QueueStatus{MeshPacketId: 2, Res: 32}, at(3.1))
+	s := h.b.Snapshot(at(4))
+	if !s.Meshtastic.Fault || !strings.Contains(s.Meshtastic.Error, "rejected") {
+		t.Fatalf("rejection should fault: %+v", s.Meshtastic)
+	}
+	h.requireLog(t, "Meshtastic radio REJECTED the message")
+	if s := h.b.Snapshot(at(3.1 + 31)); s.Meshtastic.Fault {
+		t.Error("fault should clear after MeshFaultHold")
+	}
+
+	// Third packet never confirmed.
+	h.b.Tick(at(40))
+	h.b.Tick(at(51))
+	if s := h.b.Snapshot(at(51)); !s.Meshtastic.Fault || !strings.Contains(s.Meshtastic.Error, "did not confirm") {
+		t.Fatalf("missing ack should fault: %+v", s.Meshtastic)
+	}
+	h.requireLog(t, "Meshtastic radio did not confirm the message")
+}
+
+func TestFaultFlags(t *testing.T) {
+	h := newHarness(halow.LinkConnected)
+	if s := h.b.Snapshot(at(0)); s.HaLow.Fault || s.Meshtastic.Fault {
+		t.Fatalf("healthy: %+v", s)
+	}
+	h.b.SetLink(halow.Report{Link: halow.LinkIsolated, Err: io.ErrUnexpectedEOF})
+	if s := h.b.Snapshot(at(0)); !s.HaLow.Fault || s.HaLow.Error == "" {
+		t.Errorf("batctl error should set the HaLow fault: %+v", s.HaLow)
+	}
+	h.radio.connected = false
+	if s := h.b.Snapshot(at(0)); !s.Meshtastic.Fault || s.Meshtastic.Error == "" {
+		t.Errorf("disconnected radio should fault: %+v", s.Meshtastic)
+	}
+}
+
+func TestDebugTrail(t *testing.T) {
+	h := newHarness(halow.LinkConnected)
+	h.b.HandleEUD(PortAuto, phone, pli(1, 2), at(0))
+	h.requireLog(t, "plugin message received", "uid=ANDROID-self", "callsign=ALPHA", "team=Cyan", "role=\"Team Lead\"",
+		"cot_bytes=", "not sent to Meshtastic: HaLow has neighbors", "local EUD learned")
+
+	h.b.HandleEUD(PortAlways, phone, pli(1, 2), at(1))
+	h.b.HandleEUD(PortAlways, phone, pli(1, 2.001), at(1.5))
+	h.requireLog(t, "converted to TAKPacket", "takpacket_bytes=", "position queued for Meshtastic", "newer position replaces an unsent queued one")
+	h.b.Tick(at(2))
+	h.requireLog(t, "passed to Meshtastic radio")
+
+	h.b.HandleRadio(radioPacket(0x1111, 9, remoteChat("ANDROID-bravo", cot.AllChatRooms, "hello")), at(3))
+	h.b.HandleRadio(radioPacket(0x1111, 9, remoteChat("ANDROID-bravo", cot.AllChatRooms, "hello")), at(4))
+	h.requireLog(t, "ATAK data received from Meshtastic", "payload_bytes=", "text=hello", "sent to ATAK", "dest=10.41.113.200:4242", "DUPLICATE Meshtastic packet")
+
+	h.seen.Mark("ANDROID-charlie", at(5))
+	h.b.HandleRadio(radioPacket(0x2222, 1, remotePLI("ANDROID-charlie")), at(6))
+	h.requireLog(t, "DEDUPE: sender is reachable over HaLow")
+
+	h.b.HandleRadio(&meshpb.MeshPacket{From: 3, Id: 1, PayloadVariant: &meshpb.MeshPacket_Decoded{Decoded: &meshpb.Data{Portnum: meshpb.PortNum_TEXT_MESSAGE_APP, Payload: []byte("7")}}}, at(7))
+	h.requireLog(t, "not ATAK traffic; ignored", "text=7")
 }

@@ -8,102 +8,118 @@ import (
 	"github.com/czediker/rar-atak-plugin/pi/internal/state"
 )
 
-var start = time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+var start = time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
 
-func snap(at time.Time, halow string, radio, forced bool, tx, rx uint64) state.Snapshot {
+type snapOpt func(*state.Snapshot)
+
+func snap(at time.Time, opts ...snapOpt) state.Snapshot {
 	var s state.Snapshot
 	s.Updated = at
-	s.HaLow.State = halow
-	s.Meshtastic.Connected = radio
-	s.Forced = forced
-	s.TxCount, s.RxCount = tx, rx
+	s.HaLow.State = state.HaLowConnected
+	s.HaLow.Neighbors = 2
+	s.Meshtastic.Connected = true
+	for _, o := range opts {
+		o(&s)
+	}
 	return s
 }
 
-func TestBaseColors(t *testing.T) {
+func isolated(s *state.Snapshot) {
+	s.HaLow.State, s.HaLow.Neighbors, s.Forwarding = state.HaLowIsolated, 0, true
+}
+func halowFault(s *state.Snapshot) { s.HaLow.Fault, s.HaLow.Error = true, "batctl: exit status 1" }
+func meshFault(s *state.Snapshot) {
+	s.Meshtastic.Fault, s.Meshtastic.Connected, s.Meshtastic.Error = true, false, "open: no such file"
+}
+
+func TestPatterns(t *testing.T) {
+	now := start.Add(time.Second)
 	cases := []struct {
-		name   string
-		halow  string
-		forced bool
-		want   Color
-		mode   Mode
+		name        string
+		opts        []snapOpt
+		blue, green Pattern
 	}{
-		{"connected", state.HaLowConnected, false, Blue, ModeConnected},
-		{"isolated", state.HaLowIsolated, false, Green, ModeIsolated},
-		{"unknown", state.HaLowUnknown, false, Green, ModeIsolated},
-		{"forced", state.HaLowConnected, true, Cyan, ModeForced},
-		{"forced-but-isolated", state.HaLowIsolated, true, Green, ModeIsolated},
+		{"halow connected", nil, On, Off},
+		{"fallover", []snapOpt{isolated}, Off, On},
+		{"openMANET fault while connected", []snapOpt{halowFault}, Blink, Off},
+		{"openMANET fault during fallover", []snapOpt{isolated, halowFault}, Blink, On},
+		{"radio fault while connected", []snapOpt{meshFault}, On, Blink},
+		{"radio fault during fallover", []snapOpt{isolated, meshFault}, Off, Blink},
+		{"both faults", []snapOpt{isolated, halowFault, meshFault}, Blink, Blink},
 	}
 	for _, tc := range cases {
 		e := NewEngine(DefaultConfig(), start)
-		now := start.Add(time.Second)
-		c, m := e.Frame(now, snap(now, tc.halow, true, tc.forced, 0, 0), nil)
-		if c != tc.want || m != tc.mode {
-			t.Errorf("%s: got %v/%v want %v/%v", tc.name, c, m, tc.want, tc.mode)
+		st := e.Evaluate(now, snap(now, tc.opts...), nil)
+		if st.Blue != tc.blue || st.Green != tc.green || st.Red != Off {
+			t.Errorf("%s: blue=%v green=%v red=%v, want blue=%v green=%v red=off", tc.name, st.Blue, st.Green, st.Red, tc.blue, tc.green)
 		}
+		if st.BlueWhy == "" || st.GreenWhy == "" {
+			t.Errorf("%s: missing reasons %+v", tc.name, st)
+		}
+	}
+}
+
+func TestColorRendering(t *testing.T) {
+	st := Status{Blue: Blink, Green: On}
+	if c := st.Color(true); c != (Color{G: true, B: true}) {
+		t.Errorf("phase on: %v", c)
+	}
+	if c := st.Color(false); c != (Color{G: true}) {
+		t.Errorf("phase off: %v", c)
+	}
+	alt := Status{Blue: Blink, Green: BlinkAlt}
+	if alt.Color(true) != (Color{B: true}) || alt.Color(false) != (Color{G: true}) {
+		t.Error("alternate blink should swap colors")
+	}
+	if !alt.Blinking() || (Status{Blue: On}).Blinking() {
+		t.Error("Blinking()")
 	}
 }
 
 func TestStartupThenBridgeDown(t *testing.T) {
 	e := NewEngine(DefaultConfig(), start)
-	missing := errors.New("no file")
-	c0, m := e.Frame(start, state.Snapshot{}, missing)
-	c1, _ := e.Frame(start.Add(600*time.Millisecond), state.Snapshot{}, missing)
-	if m != ModeStarting || c0 != White || c1 != Off {
-		t.Errorf("starting blink: %v %v %v", c0, c1, m)
+	missing := errors.New("open /var/run/rar/state.json: no such file or directory")
+	st := e.Evaluate(start.Add(time.Second), state.Snapshot{}, missing)
+	if st.Blue != Blink || st.Green != BlinkAlt {
+		t.Errorf("starting: %+v", st)
 	}
-	if c, m := e.Frame(start.Add(91*time.Second), state.Snapshot{}, missing); c != Red || m != ModeBridgeDown {
-		t.Errorf("after grace: %v %v", c, m)
+	st = e.Evaluate(start.Add(91*time.Second), state.Snapshot{}, missing)
+	if st.Blue != Blink || st.Green != Blink {
+		t.Errorf("bridge down: %+v", st)
 	}
 }
 
-func TestStaleStatusIsBridgeDown(t *testing.T) {
+func TestStaleStatusAfterRunning(t *testing.T) {
 	e := NewEngine(DefaultConfig(), start)
 	now := start.Add(time.Second)
-	e.Frame(now, snap(now, state.HaLowConnected, true, false, 0, 0), nil)
-	later := now.Add(11 * time.Second)
-	if c, m := e.Frame(later, snap(now, state.HaLowConnected, true, false, 0, 0), nil); c != Red || m != ModeBridgeDown {
-		t.Errorf("stale: %v %v", c, m)
+	e.Evaluate(now, snap(now), nil)
+	// Within the startup grace, but the bridge was seen running: this is
+	// "bridge down", not "starting".
+	st := e.Evaluate(now.Add(11*time.Second), snap(now), nil)
+	if st.Blue != Blink || st.Green != Blink {
+		t.Errorf("stale: %+v", st)
 	}
 }
 
-func TestRadioFaultBlinksRed(t *testing.T) {
-	e := NewEngine(DefaultConfig(), start)
-	a := start
-	b := start.Add(600 * time.Millisecond)
-	c1, m := e.Frame(a, snap(a, state.HaLowConnected, false, false, 0, 0), nil)
-	c2, _ := e.Frame(b, snap(b, state.HaLowConnected, false, false, 0, 0), nil)
-	if m != ModeRadioFault || c1 != Blue || c2 != Red {
-		t.Errorf("fault blink: %v %v %v", c1, c2, m)
-	}
-}
-
-func TestFlashOnTraffic(t *testing.T) {
+func TestRedIsReserved(t *testing.T) {
 	e := NewEngine(DefaultConfig(), start)
 	now := start.Add(time.Second)
-	// First read never flashes.
-	if c, _ := e.Frame(now, snap(now, state.HaLowIsolated, true, false, 5, 2), nil); c != Green {
-		t.Fatalf("first frame %v", c)
+	for _, opts := range [][]snapOpt{nil, {isolated, halowFault, meshFault}} {
+		if st := e.Evaluate(now, snap(now, opts...), nil); st.Red != Off || st.Color(true).R {
+			t.Errorf("red must stay off: %+v", st)
+		}
 	}
-	now = now.Add(100 * time.Millisecond)
-	if c, _ := e.Frame(now, snap(now, state.HaLowIsolated, true, false, 6, 2), nil); c != White {
-		t.Errorf("tx should flash, got %v", c)
+	if st := e.Evaluate(now, state.Snapshot{}, errors.New("x")); st.Red != Off {
+		t.Error("red must stay off when the bridge is down")
 	}
-	now = now.Add(100 * time.Millisecond)
-	if c, _ := e.Frame(now, snap(now, state.HaLowIsolated, true, false, 6, 2), nil); c != White {
-		t.Errorf("flash should last 150ms, got %v", c)
-	}
-	now = now.Add(100 * time.Millisecond)
-	if c, _ := e.Frame(now, snap(now, state.HaLowIsolated, true, false, 6, 2), nil); c != Green {
-		t.Errorf("flash should end, got %v", c)
-	}
-	if c, _ := e.Frame(now, snap(now, state.HaLowIsolated, true, false, 6, 3), nil); c != White {
-		t.Errorf("rx should flash, got %v", c)
+	e.SetRed(Blink, "low battery")
+	if st := e.Evaluate(now, snap(now), nil); st.Red != Blink || st.RedWhy != "low battery" {
+		t.Errorf("red hook: %+v", st)
 	}
 }
 
 func TestColorString(t *testing.T) {
-	if Cyan.String() != "cyan" || (Color{R: true, B: true}).String() != "RB" {
+	if (Color{}).String() != "off" || (Color{G: true, B: true}).String() != "GB" {
 		t.Error("String()")
 	}
 }

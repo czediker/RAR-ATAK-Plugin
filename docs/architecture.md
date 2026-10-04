@@ -102,10 +102,35 @@ same packet always maps to the same ATAK message and ATAK de-duplicates it.
 ## Status and LED
 
 `rar-bridge` writes `/var/run/rar/state.json` (tmpfs) every second and
-immediately on changes. `rar-led` polls it every 50 ms. The services share
-nothing else, so either can restart independently; a status file older than
-10 s means the bridge is down. See [wire-format](wire-format.md#status-file)
-for the schema and the [README](../README.md#led) for the colors.
+immediately on changes. `rar-led` reads it once a second and runs a separate
+500 ms clock only to toggle blinking colors; GPIO lines are written only
+when the color changes (measured: under 0.1 % of one core). The services
+share nothing else, so either can restart independently; a status file older
+than 10 s means the bridge is down. See
+[wire-format](wire-format.md#status-file) for the schema and the
+[README](../README.md#led) for the colors.
+
+The bridge sets two fault flags for the LED:
+
+* `halow.fault` — the `batctl` neighbor query failed on the last poll, or an
+  ATAK multicast listener on `br-ahwlan` is down → blue blinks.
+* `meshtastic.fault` — the radio is not connected (no config handshake), or
+  within the last 30 s a packet could not be handed to it, was rejected
+  (QueueStatus error) or was not confirmed within 10 s → green blinks.
+
+## Debug logging
+
+With `rar.global.debug=1` both services log at debug level, every line
+tagged `service=rar-bridge` or `service=rar-led` (see
+[deployment](deployment.md#debug-logging) for an annotated example). The
+bridge logs each plugin datagram with its ATAK IDs and metadata, the
+forwarding decision, the TAKPacket size, the hand-off to the radio and the
+radio's confirmation, each received Meshtastic packet (RSSI/SNR/hops) with
+its ATAK content, every delivery to ATAK (ip:port), every de-duplication,
+every committed state.json change (as a field diff), HaLow neighbor changes
+and fallover countdowns, radio handshake details, and EUD/DHCP target
+changes. The LED service logs every committed pattern change with its
+reason, and status file problems.
 
 ## Extension point: relaying to isolated radios
 

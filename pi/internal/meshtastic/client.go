@@ -179,6 +179,7 @@ func (c *Client) session(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("open: %w", err)
 	}
+	c.log.Debug("serial port opened; waking radio and requesting config")
 	sctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go func() {
@@ -270,6 +271,7 @@ func (c *Client) session(ctx context.Context) error {
 				if err := c.send(conn, hb); err != nil {
 					return err
 				}
+				c.log.Debug("heartbeat sent to radio")
 			}
 		}
 	}
@@ -295,6 +297,13 @@ func (c *Client) handleFrame(f []byte) (reconfig bool, err error) {
 			c.mu.Lock()
 			c.status.DeviceHopLimit = lora.GetHopLimit()
 			c.mu.Unlock()
+			c.log.Debug("radio LoRa config", "region", lora.GetRegion(), "preset", lora.GetModemPreset(), "hop_limit", lora.GetHopLimit(), "tx_enabled", lora.GetTxEnabled())
+		}
+	case *meshpb.FromRadio_Metadata:
+		c.log.Debug("radio metadata", "firmware", v.Metadata.GetFirmwareVersion(), "hw_model", v.Metadata.GetHwModel(), "role", v.Metadata.GetRole())
+	case *meshpb.FromRadio_Channel:
+		if ch := v.Channel; ch.GetRole() != meshpb.Channel_DISABLED {
+			c.log.Debug("radio channel", "index", ch.GetIndex(), "role", ch.GetRole(), "name", ch.GetSettings().GetName())
 		}
 	case *meshpb.FromRadio_ConfigCompleteId:
 		c.mu.Lock()
@@ -346,6 +355,7 @@ func (c *Client) requestConfig(conn io.Writer) error {
 	c.nonce = nonce
 	c.status.Connected = false
 	c.mu.Unlock()
+	c.log.Debug("config handshake requested", "nonce", nonce)
 	return c.send(conn, &meshpb.ToRadio{PayloadVariant: &meshpb.ToRadio_WantConfigId{WantConfigId: nonce}})
 }
 

@@ -14,7 +14,12 @@ func TestRegistry(t *testing.T) {
 	t0 := time.Unix(1000, 0)
 	a := netip.MustParseAddr("10.41.113.200")
 	b := netip.MustParseAddr("10.41.113.201")
-	r.Learn(a, "ANDROID-a", t0)
+	if na, nu := r.Learn(a, "ANDROID-a", t0); !na || !nu {
+		t.Error("first Learn should report new address and UID")
+	}
+	if na, nu := r.Learn(a, "ANDROID-a", t0); na || nu {
+		t.Error("repeat Learn should report nothing new")
+	}
 	r.Learn(netip.MustParseAddr("::ffff:10.41.113.201"), "", t0.Add(30*time.Second))
 	r.SetLeases([]netip.Addr{a, netip.MustParseAddr("10.41.113.210")})
 

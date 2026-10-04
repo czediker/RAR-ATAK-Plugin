@@ -3,9 +3,12 @@ package bridge
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/netip"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/czediker/rar-atak-plugin/pi/internal/eud"
@@ -43,6 +46,7 @@ func ListenUDP(ctx context.Context, addr string, port Port, out chan<- Datagram,
 				}
 				return
 			}
+			log.Debug("UDP datagram from plugin", "listen", addr, "port", port, "src", src, "bytes", n)
 			d := Datagram{Port: port, Src: src.Addr().Unmap(), Data: append([]byte(nil), buf[:n]...)}
 			select {
 			case out <- d:
@@ -70,10 +74,12 @@ func NewUDPDeliverer(port uint16) (*UDPDeliverer, error) {
 	return &UDPDeliverer{conn: c, port: port}, nil
 }
 
-// Deliver sends data to addr.
-func (d *UDPDeliverer) Deliver(addr netip.Addr, data []byte) error {
-	_, err := d.conn.WriteToUDPAddrPort(data, netip.AddrPortFrom(addr, d.port))
-	return err
+// Deliver sends data to addr and returns the destination "ip:port". UDP has
+// no delivery receipt: success means the datagram left this host.
+func (d *UDPDeliverer) Deliver(addr netip.Addr, data []byte) (string, error) {
+	dst := netip.AddrPortFrom(addr, d.port)
+	_, err := d.conn.WriteToUDPAddrPort(data, dst)
+	return dst.String(), err
 }
 
 // Close releases the socket.
@@ -81,8 +87,11 @@ func (d *UDPDeliverer) Close() error { return d.conn.Close() }
 
 // LoopConfig wires the bridge to its inputs.
 type LoopConfig struct {
-	Inbound   <-chan Datagram
-	Radio     <-chan *meshpb.MeshPacket
+	Inbound <-chan Datagram
+	Radio   <-chan *meshpb.MeshPacket
+	// Acks carries the radio's QueueStatus messages (its confirmation of
+	// each packet handed to it). Optional.
+	Acks      <-chan *meshpb.QueueStatus
 	Reports   <-chan halow.Report
 	StatePath string
 	// LeaseFile, if set, adds this node's DHCP clients as delivery targets.
@@ -103,14 +112,27 @@ func (b *Bridge) Loop(ctx context.Context, lc LoopConfig) {
 	leaseTick := time.NewTicker(15 * time.Second)
 	defer leaseTick.Stop()
 
+	var written state.Snapshot
+	first := true
 	writeState := func() {
 		if lc.StatePath == "" {
 			return
 		}
-		if err := state.Write(lc.StatePath, b.Snapshot(now())); err != nil {
+		snap := b.Snapshot(now())
+		if err := state.Write(lc.StatePath, snap); err != nil {
 			b.log.Warn("cannot write state file", "path", lc.StatePath, "err", err)
+			return
 		}
+		if first {
+			b.log.Debug("state.json written", "path", lc.StatePath, "halow", snap.HaLow.State, "halow_fault", snap.HaLow.Fault,
+				"meshtastic_connected", snap.Meshtastic.Connected, "meshtastic_fault", snap.Meshtastic.Fault, "forwarding", snap.Forwarding)
+		} else if diff := state.Diff(written, snap); len(diff) > 0 {
+			b.log.Debug("state.json change committed", "changes", strings.Join(diff, "; "))
+		}
+		written, first = snap, false
 	}
+	var leases []netip.Addr
+	leasesRead := false
 	readLeases := func() {
 		if lc.LeaseFile == "" {
 			return
@@ -120,6 +142,10 @@ func (b *Bridge) Loop(ctx context.Context, lc LoopConfig) {
 			b.log.Debug("cannot read DHCP leases", "file", lc.LeaseFile, "err", err)
 			return
 		}
+		if !leasesRead || !slices.Equal(addrs, leases) {
+			b.log.Debug("DHCP clients of this node (also receive Meshtastic traffic)", "file", lc.LeaseFile, "addrs", fmt.Sprint(addrs))
+		}
+		leases, leasesRead = addrs, true
 		b.euds.SetLeases(addrs)
 	}
 	readLeases()
@@ -137,6 +163,8 @@ func (b *Bridge) Loop(ctx context.Context, lc LoopConfig) {
 			if b.rxCount != before {
 				writeState()
 			}
+		case qs := <-lc.Acks:
+			b.HandleAck(qs, now())
 		case r := <-lc.Reports:
 			prev := b.link
 			b.SetLink(r)

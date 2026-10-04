@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 )
 
@@ -15,7 +16,7 @@ import (
 const DefaultPath = "/var/run/rar/state.json"
 
 // Version is bumped on incompatible changes to Snapshot.
-const Version = 1
+const Version = 2
 
 // HaLow link states, as written to Snapshot.HaLow.State.
 const (
@@ -32,13 +33,19 @@ type Snapshot struct {
 	HaLow struct {
 		State     string `json:"state"`
 		Neighbors int    `json:"neighbors"`
-		Error     string `json:"error,omitempty"`
+		// Fault is true while openMANET cannot be queried (batctl fails)
+		// or the ATAK multicast listener on the mesh bridge is down.
+		Fault bool   `json:"fault"`
+		Error string `json:"error,omitempty"`
 	} `json:"halow"`
 
 	Meshtastic struct {
 		Connected bool   `json:"connected"`
 		Node      string `json:"node,omitempty"`
-		Error     string `json:"error,omitempty"`
+		// Fault is true while the radio is not connected, or shortly after
+		// it failed, rejected or did not confirm a packet.
+		Fault bool   `json:"fault"`
+		Error string `json:"error,omitempty"`
 	} `json:"meshtastic"`
 
 	// Forwarding is true when port 6700 traffic is being sent over
@@ -49,7 +56,7 @@ type Snapshot struct {
 	Forced bool `json:"forced"`
 
 	// TxCount/RxCount increase with every TAKPacket sent/received over
-	// Meshtastic; the LED service flashes when they change.
+	// Meshtastic.
 	TxCount uint64    `json:"tx_count"`
 	RxCount uint64    `json:"rx_count"`
 	LastTx  time.Time `json:"last_tx,omitzero"`
@@ -102,4 +109,61 @@ func Read(path string) (Snapshot, error) {
 		return s, fmt.Errorf("%s: unsupported state version %d", path, s.Version)
 	}
 	return s, nil
+}
+
+// Diff lists the fields that differ between two snapshots as
+// "field: old → new", ignoring the Updated timestamp. Used for debug logs.
+func Diff(old, cur Snapshot) []string {
+	a, b := flatten(old), flatten(cur)
+	keys := make([]string, 0, len(b))
+	for k := range a {
+		keys = append(keys, k)
+	}
+	for k := range b {
+		if _, ok := a[k]; !ok {
+			keys = append(keys, k)
+		}
+	}
+	slices.Sort(keys)
+	var out []string
+	for _, k := range keys {
+		if k == "updated" || k == "version" {
+			continue
+		}
+		if av, bv := a[k], b[k]; av != bv {
+			out = append(out, fmt.Sprintf("%s: %s → %s", k, show(av), show(bv)))
+		}
+	}
+	return out
+}
+
+func show(v string) string {
+	if v == "" {
+		return `""`
+	}
+	return v
+}
+
+// flatten turns a snapshot into "a.b" → value strings via its JSON form.
+func flatten(s Snapshot) map[string]string {
+	b, _ := json.Marshal(s)
+	var m map[string]any
+	_ = json.Unmarshal(b, &m)
+	out := map[string]string{}
+	var walk func(prefix string, v any)
+	walk = func(prefix string, v any) {
+		if mm, ok := v.(map[string]any); ok {
+			for k, vv := range mm {
+				key := k
+				if prefix != "" {
+					key = prefix + "." + k
+				}
+				walk(key, vv)
+			}
+			return
+		}
+		out[prefix] = fmt.Sprint(v)
+	}
+	walk("", m)
+	return out
 }

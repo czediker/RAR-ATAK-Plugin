@@ -1,6 +1,7 @@
 package halowseen
 
 import (
+	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -24,6 +25,31 @@ func TestTracker(t *testing.T) {
 		t.Errorf("UIDs = %v", got)
 	}
 	if tr.Recently("nobody", t0) {
+		t.Error("unknown uid")
+	}
+}
+
+func TestListenerErrorAndLastHeard(t *testing.T) {
+	tr := NewTracker(time.Minute)
+	if tr.ListenerError() != "" {
+		t.Fatal("no error expected initially")
+	}
+	tr.setListenerError(SAGroup, errors.New("no such interface"))
+	tr.setListenerError(ChatGroup, errors.New("boom"))
+	if got := tr.ListenerError(); got != ChatGroup+": boom; "+SAGroup+": no such interface" {
+		t.Errorf("ListenerError = %q", got)
+	}
+	tr.setListenerError(ChatGroup, nil)
+	tr.setListenerError(SAGroup, nil)
+	if tr.ListenerError() != "" {
+		t.Error("errors should clear")
+	}
+	at := time.Unix(5, 0)
+	tr.Mark("u", at)
+	if last, ok := tr.LastHeard("u"); !ok || !last.Equal(at) {
+		t.Errorf("LastHeard = %v %v", last, ok)
+	}
+	if _, ok := tr.LastHeard("nobody"); ok {
 		t.Error("unknown uid")
 	}
 }

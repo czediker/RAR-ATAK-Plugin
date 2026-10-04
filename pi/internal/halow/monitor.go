@@ -3,6 +3,8 @@ package halow
 import (
 	"context"
 	"log/slog"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -44,6 +46,19 @@ type Hysteresis struct {
 
 // State returns the current debounced state.
 func (h *Hysteresis) State() Link { return h.state }
+
+// Pending reports a state change in progress: the state being moved to and
+// how long until it takes effect if observations do not change.
+func (h *Hysteresis) Pending(now time.Time) (to Link, remaining time.Duration, ok bool) {
+	if h.pending.IsZero() || h.state == LinkUnknown {
+		return LinkUnknown, 0, false
+	}
+	to, hold := LinkIsolated, h.DownAfter
+	if h.state == LinkIsolated {
+		to, hold = LinkConnected, h.UpAfter
+	}
+	return to, max(hold-now.Sub(h.pending), 0), true
+}
 
 // Observe feeds one observation and returns the (possibly new) state and
 // whether it changed. The first observation sets the state immediately.
@@ -110,6 +125,9 @@ func (m *Monitor) Run(ctx context.Context, out chan<- Report) {
 	}
 	t := time.NewTicker(m.Poll)
 	defer t.Stop()
+	var lastSet string
+	var lastErr string
+	wasPending := false
 	for {
 		cctx, cancel := context.WithTimeout(ctx, max(m.Poll, time.Second))
 		ns, err := m.Source.Neighbors(cctx)
@@ -120,10 +138,35 @@ func (m *Monitor) Run(ctx context.Context, out chan<- Report) {
 		at := now()
 		link, changed := m.Hyst.Observe(at, err == nil && len(ns) > 0)
 		if err != nil {
-			log.Warn("neighbor check failed", "err", err)
+			if err.Error() != lastErr {
+				log.Warn("openMANET neighbor query failed (counts as no neighbors)", "err", err)
+			}
+			lastErr = err.Error()
+		} else {
+			if lastErr != "" {
+				log.Info("openMANET neighbor query working again")
+			}
+			lastErr = ""
+			if set := neighborSummary(ns); set != lastSet {
+				log.Debug("HaLow neighbor set changed", "count", len(ns), "neighbors", set)
+				lastSet = set
+			}
 		}
 		if changed {
-			log.Info("HaLow link state", "state", link, "neighbors", len(ns))
+			log.Info("HaLow link state committed", "state", link, "neighbors", len(ns))
+		}
+		if to, remaining, ok := m.Hyst.Pending(at); ok && !wasPending {
+			if to == LinkIsolated {
+				log.Debug("no HaLow neighbors; switching to Meshtastic fallback unless they return", "in", remaining.Round(time.Second))
+			} else {
+				log.Debug("HaLow neighbors back; returning to HaLow if they stay", "in", remaining.Round(time.Second))
+			}
+			wasPending = true
+		} else if !ok && wasPending {
+			if !changed {
+				log.Debug("pending HaLow state change cancelled", "state", link, "neighbors", len(ns))
+			}
+			wasPending = false
 		}
 		select {
 		case out <- Report{At: at, Link: link, Neighbors: len(ns), Err: err}:
@@ -136,4 +179,15 @@ func (m *Monitor) Run(ctx context.Context, out chan<- Report) {
 			return
 		}
 	}
+}
+
+// neighborSummary renders neighbors as "iface/addr" for logs,
+// keyed only on interface and address so it changes when the set does.
+func neighborSummary(ns []Neighbor) string {
+	parts := make([]string, 0, len(ns))
+	for _, n := range ns {
+		parts = append(parts, n.Iface+"/"+n.Address)
+	}
+	slices.Sort(parts)
+	return strings.Join(parts, ",")
 }

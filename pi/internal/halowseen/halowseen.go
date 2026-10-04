@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,13 +32,18 @@ const (
 // safe for concurrent use.
 type Tracker struct {
 	window time.Duration
-	mu     sync.Mutex
-	seen   map[string]time.Time
+	// Log, if set, receives a debug line whenever a user starts being heard
+	// over HaLow.
+	Log *slog.Logger
+
+	mu        sync.Mutex
+	seen      map[string]time.Time
+	listenErr map[string]string // multicast group → last error
 }
 
 // NewTracker creates a tracker; UIDs not heard for window are forgotten.
 func NewTracker(window time.Duration) *Tracker {
-	return &Tracker{window: window, seen: map[string]time.Time{}}
+	return &Tracker{window: window, seen: map[string]time.Time{}, listenErr: map[string]string{}}
 }
 
 // Mark records uid as heard at now.
@@ -46,8 +52,43 @@ func (t *Tracker) Mark(uid string, now time.Time) {
 		return
 	}
 	t.mu.Lock()
+	last, ok := t.seen[uid]
 	t.seen[uid] = now
 	t.mu.Unlock()
+	if t.Log != nil && (!ok || now.Sub(last) > t.window) {
+		t.Log.Debug("ATAK user heard over HaLow (Meshtastic copies from this user will be de-duplicated)", "uid", uid)
+	}
+}
+
+// LastHeard returns when uid was last heard over HaLow.
+func (t *Tracker) LastHeard(uid string) (time.Time, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	last, ok := t.seen[uid]
+	return last, ok
+}
+
+// ListenerError describes multicast listeners that are currently failing
+// (empty when all are healthy).
+func (t *Tracker) ListenerError() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var parts []string
+	for g, e := range t.listenErr {
+		parts = append(parts, g+": "+e)
+	}
+	slices.Sort(parts)
+	return strings.Join(parts, "; ")
+}
+
+func (t *Tracker) setListenerError(group string, err error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err == nil {
+		delete(t.listenErr, group)
+	} else {
+		t.listenErr[group] = err.Error()
+	}
 }
 
 // Observe parses a CoT datagram and marks its sender.
@@ -102,7 +143,11 @@ func Listen(ctx context.Context, iface, group string, t *Tracker, log *slog.Logg
 		if ctx.Err() != nil {
 			return
 		}
-		log.Warn("multicast listener stopped; retrying", "err", err, "in", backoff)
+		if err == nil {
+			err = errors.New("listener stopped")
+		}
+		t.setListenerError(group, err)
+		log.Warn("multicast listener stopped; retrying", "iface", iface, "err", err, "in", backoff)
 		select {
 		case <-ctx.Done():
 			return
@@ -130,7 +175,8 @@ func listenOnce(ctx context.Context, iface, group string, t *Tracker, log *slog.
 	defer conn.Close()
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
-	log.Info("listening for ATAK multicast")
+	t.setListenerError(group, nil)
+	log.Info("listening for ATAK multicast", "iface", iface)
 
 	buf := make([]byte, 64*1024)
 	for {

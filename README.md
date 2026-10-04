@@ -21,7 +21,7 @@ Software for a handheld ATAK radio with two meshes:
  │  ├─ CoT ⇄ TAKPacket (ATAK_PLUGIN port 72), LoRa rate limiting           │
  │  ├─ Meshtastic RX → CoT → UDP 4242 on the local EUD                     │
  │  └─ writes /var/run/rar/state.json                                      │
- │ rar-led ── reads state.json ── RGB LED (GPIO 16/20/21)                  │
+ │ rar-led ── reads state.json each second ── RGB LED (GPIO 20 G / 21 B)   │
  └──────────────────────────────── /dev/ttyAMA0 ───────────────────────────┘
                                         │ UART (Meshtastic Serial module, PROTO mode)
                                  RAK4631 (Meshtastic) ── LoRa mesh
@@ -40,15 +40,23 @@ Software for a handheld ATAK radio with two meshes:
 
 ## LED
 
-| LED | Meaning |
-|-----|---------|
-| Blue | HaLow has neighbors; ATAK traffic stays on HaLow |
-| Green | No HaLow neighbors; chat and position go out over Meshtastic |
-| Cyan | HaLow has neighbors and the plugin's **Always send over Meshtastic** is on |
-| Color alternating with red | Meshtastic radio not connected (check UART / Serial module) |
-| Short white flash | A packet was sent or received over Meshtastic |
-| Slow white blink | Starting up, waiting for `rar-bridge` |
-| Solid red | `rar-bridge` is not running |
+Common-cathode RGB LED. Blue reports HaLow, green reports Meshtastic, and
+each blinks for a fault in its own component, whatever the fallover state.
+
+| Blue | Green | Meaning |
+|------|-------|---------|
+| solid | off | HaLow has neighbors; ATAK traffic stays on HaLow |
+| off | solid | Fallover: no HaLow neighbors, chat and position go out over Meshtastic |
+| **blinking** | — | openMANET problem: the neighbor query (`batctl`) or the ATAK multicast listener is failing |
+| — | **blinking** | Meshtastic radio problem: not connected, or a packet failed, was rejected or not confirmed |
+| alternating with green | | Starting up, waiting for `rar-bridge` |
+| blinking together with green | | `rar-bridge` is not running (status file missing or stale) |
+
+Red is reserved (planned: low battery) and stays off; `rar-led -red-file`
+is the hook for it.
+
+Debug logging for both services: `uci set rar.global.debug=1; uci commit rar`,
+then `logread -f -e rar` — see [deployment](docs/deployment.md#debug-logging).
 
 ## Quick start
 

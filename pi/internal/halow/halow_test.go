@@ -189,3 +189,28 @@ func TestMonitorTreatsErrorsAsNoNeighbors(t *testing.T) {
 		t.Fatalf("second report %+v", r)
 	}
 }
+
+func TestHysteresisPending(t *testing.T) {
+	h := &Hysteresis{DownAfter: 15 * time.Second, UpAfter: 30 * time.Second}
+	t0 := time.Unix(1000, 0)
+	if _, _, ok := h.Pending(t0); ok {
+		t.Fatal("nothing pending before first observation")
+	}
+	h.Observe(t0, true)
+	h.Observe(t0.Add(time.Second), false)
+	to, rem, ok := h.Pending(t0.Add(6 * time.Second))
+	if !ok || to != LinkIsolated || rem != 10*time.Second {
+		t.Errorf("pending = %v %v %v", to, rem, ok)
+	}
+	h.Observe(t0.Add(7*time.Second), true)
+	if _, _, ok := h.Pending(t0.Add(7 * time.Second)); ok {
+		t.Error("presence should cancel the pending change")
+	}
+}
+
+func TestNeighborSummary(t *testing.T) {
+	got := neighborSummary([]Neighbor{{Iface: "wlan0", Address: "b"}, {Iface: "wlan0", Address: "a", LastSeen: time.Second}})
+	if got != "wlan0/a,wlan0/b" {
+		t.Errorf("summary = %q", got)
+	}
+}

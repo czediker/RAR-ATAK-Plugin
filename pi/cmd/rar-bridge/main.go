@@ -17,6 +17,7 @@ import (
 	"github.com/czediker/rar-atak-plugin/pi/internal/eud"
 	"github.com/czediker/rar-atak-plugin/pi/internal/halow"
 	"github.com/czediker/rar-atak-plugin/pi/internal/halowseen"
+	"github.com/czediker/rar-atak-plugin/pi/internal/meshpb"
 	"github.com/czediker/rar-atak-plugin/pi/internal/meshtastic"
 	"github.com/czediker/rar-atak-plugin/pi/internal/state"
 )
@@ -66,6 +67,7 @@ func main() {
 
 		statePath = flag.String("state-file", state.DefaultPath, "status file read by rar-led")
 		logLevel  = flag.String("log-level", "info", "debug, info, warn or error")
+		debug     = flag.Bool("debug", false, "log every message, decision, de-duplication and state change (same as -log-level debug)")
 		showVer   = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
@@ -74,9 +76,15 @@ func main() {
 		return
 	}
 
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: parseLevel(*logLevel)}))
+	level := parseLevel(*logLevel)
+	if *debug {
+		level = slog.LevelDebug
+	}
+	// stdout: procd logs it as daemon.info (stderr would show as daemon.err).
+	// Every line carries service=rar-bridge.
+	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})).With("service", "rar-bridge")
 	slog.SetDefault(log)
-	log.Info("starting rar-bridge", "version", version, "serial", *serialDev, "baud", *baud, "halow_iface", *halowIface)
+	log.Info("starting rar-bridge", "version", version, "serial", *serialDev, "baud", *baud, "halow_iface", *halowIface, "debug", level == slog.LevelDebug)
 	if *halowIface == halow.Placeholder || *halowIface == "" {
 		log.Warn("HaLow interface not configured; counting batman-adv neighbors on every interface")
 	}
@@ -84,10 +92,21 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// The radio confirms every packet handed to it with a QueueStatus; pass
+	// those to the bridge so it can report success or failure.
+	acks := make(chan *meshpb.QueueStatus, 64)
 	radio := meshtastic.New(meshtastic.Config{
 		HopLimit: uint32(*hopLimit),
 		Channel:  uint32(*channel),
 		Logger:   log,
+		OnFromRadio: func(m *meshpb.FromRadio) {
+			if qs := m.GetQueueStatus(); qs != nil {
+				select {
+				case acks <- qs:
+				default:
+				}
+			}
+		},
 	}, meshtastic.SerialOpener(*serialDev, *baud))
 	go radio.Run(ctx)
 
@@ -103,6 +122,7 @@ func main() {
 	var seen *halowseen.Tracker
 	if *suppressDups {
 		seen = halowseen.NewTracker(*seenWindow)
+		seen.Log = log.With("component", "halowseen")
 		for _, g := range []string{*saGroup, *chatGroup} {
 			if g != "" {
 				go halowseen.Listen(ctx, *mcastIface, g, seen, log)
@@ -142,6 +162,7 @@ func main() {
 	b.Loop(ctx, bridge.LoopConfig{
 		Inbound:   inbound,
 		Radio:     radio.Packets(),
+		Acks:      acks,
 		Reports:   reports,
 		StatePath: *statePath,
 		LeaseFile: *leaseFile,

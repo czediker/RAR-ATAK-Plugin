@@ -60,27 +60,32 @@ on port 72, which current firmware passes through unchanged.
 
 ## Status file
 
-`/var/run/rar/state.json`, replaced atomically:
+`/var/run/rar/state.json`, replaced atomically every second (version 2):
 
 ```json
 {
-  "version": 1,
-  "updated": "2026-10-03T20:08:06.718Z",
-  "halow": { "state": "connected|isolated|unknown", "neighbors": 1, "error": "" },
-  "meshtastic": { "connected": true, "node": "!a1b2c3d4", "error": "" },
+  "version": 2,
+  "updated": "2026-10-04T20:08:06.718Z",
+  "halow": { "state": "connected|isolated|unknown", "neighbors": 1, "fault": false, "error": "" },
+  "meshtastic": { "connected": true, "node": "!a1b2c3d4", "fault": false, "error": "" },
   "forwarding": false,
   "forced": true,
   "tx_count": 12,
   "rx_count": 3,
-  "last_tx": "2026-10-03T20:07:59Z",
-  "last_rx": "2026-10-03T20:05:10Z",
+  "last_tx": "2026-10-04T20:07:59Z",
+  "last_rx": "2026-10-04T20:05:10Z",
   "euds": 1,
   "queued_chats": 0,
   "queued_plis": 0
 }
 ```
 
-* `forwarding` — port 6700 traffic is going to Meshtastic.
+* `halow.fault` — openMANET problem: the last `batctl` neighbor query failed
+  or an ATAK multicast listener is down (`error` says which). Blue blinks.
+* `meshtastic.fault` — radio not connected, or a packet failed / was
+  rejected / was not confirmed in the last 30 s (`error` says which).
+  Green blinks.
+* `forwarding` — port 6700 traffic is going to Meshtastic (fallover).
+  Green is solid.
 * `forced` — port 6701 traffic seen in the last 90 s.
-* `tx_count` / `rx_count` — TAKPackets sent / accepted; the LED flashes when
-  they change.
+* `tx_count` / `rx_count` — TAKPackets handed to the radio / accepted from it.

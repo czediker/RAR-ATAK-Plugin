@@ -1,50 +1,32 @@
-// Package led maps the bridge status to an RGB LED color.
+// Package led maps the bridge status to the RGB status LED. Each color has
+// its own job:
 //
-//	Blue                 HaLow connected (traffic stays on HaLow)
-//	Green                No HaLow neighbors: traffic is going over Meshtastic
-//	Cyan                 HaLow connected and the plugin's "always send over
-//	                     Meshtastic" toggle is on
-//	<color>/Red blink    Meshtastic radio not connected
-//	White flash          A packet was sent or received over Meshtastic
-//	White slow blink     Starting up: waiting for the bridge service
-//	Solid red            Bridge service not running (status file missing or
-//	                     not updated)
+//	Blue  solid      HaLow mesh has neighbors; ATAK traffic stays on HaLow
+//	Blue  blinking   openMANET problem: the neighbor query (batctl) or the
+//	                 ATAK multicast listener on the mesh bridge is failing
+//	Green solid      Fallover: no HaLow neighbors, traffic goes over Meshtastic
+//	Green blinking   Meshtastic radio problem: not connected, or a packet
+//	                 failed, was rejected or was not confirmed
+//	Red              Reserved (planned: low battery). Off unless driven
+//	                 through the red hook (Engine.SetRed / rar-led -red-file).
+//
+// A fault blinks its own color whatever the fallover state is. Two patterns
+// cover the bridge itself: blue and green alternating while waiting for
+// rar-bridge at startup, and blue and green blinking together when its
+// status file is missing or no longer updated.
 package led
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/czediker/rar-atak-plugin/pi/internal/state"
 )
 
-// Color is an on/off RGB value.
+// Color is an on/off RGB value as written to the pins.
 type Color struct{ R, G, B bool }
 
-// Named colors.
-var (
-	Off   = Color{}
-	Red   = Color{R: true}
-	Green = Color{G: true}
-	Blue  = Color{B: true}
-	Cyan  = Color{G: true, B: true}
-	White = Color{R: true, G: true, B: true}
-)
-
 func (c Color) String() string {
-	switch c {
-	case Off:
-		return "off"
-	case Red:
-		return "red"
-	case Green:
-		return "green"
-	case Blue:
-		return "blue"
-	case Cyan:
-		return "cyan"
-	case White:
-		return "white"
-	}
 	s := ""
 	for _, p := range []struct {
 		on bool
@@ -54,99 +36,149 @@ func (c Color) String() string {
 			s += p.n
 		}
 	}
+	if s == "" {
+		return "off"
+	}
 	return s
 }
 
-// Mode names the condition the LED is showing (for logging).
-type Mode string
+// Pattern is what one color of the LED is doing.
+type Pattern int
 
-// LED modes.
+// Patterns.
 const (
-	ModeStarting   Mode = "starting"
-	ModeBridgeDown Mode = "bridge-down"
-	ModeConnected  Mode = "halow-connected"
-	ModeIsolated   Mode = "meshtastic-fallback"
-	ModeForced     Mode = "meshtastic-forced"
-	ModeRadioFault Mode = "radio-fault"
+	Off Pattern = iota
+	On
+	// Blink toggles every half blink period.
+	Blink
+	// BlinkAlt blinks in opposite phase to Blink (used to alternate colors).
+	BlinkAlt
 )
 
-// Config tunes the indicator timing.
+func (p Pattern) String() string {
+	switch p {
+	case On:
+		return "solid"
+	case Blink:
+		return "blinking"
+	case BlinkAlt:
+		return "blinking (alternate)"
+	default:
+		return "off"
+	}
+}
+
+func (p Pattern) lit(phase bool) bool {
+	switch p {
+	case On:
+		return true
+	case Blink:
+		return phase
+	case BlinkAlt:
+		return !phase
+	default:
+		return false
+	}
+}
+
+// Status is the pattern of each color plus why it was chosen.
+type Status struct {
+	Red, Green, Blue Pattern
+	GreenWhy         string
+	BlueWhy          string
+	RedWhy           string
+}
+
+// Color renders the status for one blink phase.
+func (s Status) Color(phase bool) Color {
+	return Color{R: s.Red.lit(phase), G: s.Green.lit(phase), B: s.Blue.lit(phase)}
+}
+
+// Blinking reports whether any color blinks (so the blink clock matters).
+func (s Status) Blinking() bool {
+	for _, p := range []Pattern{s.Red, s.Green, s.Blue} {
+		if p == Blink || p == BlinkAlt {
+			return true
+		}
+	}
+	return false
+}
+
+// Config tunes the indicator.
 type Config struct {
 	// Stale is how old the status file may get before the bridge is
 	// considered down.
 	Stale time.Duration
 	// StartupGrace is how long to show "starting" before "bridge down".
 	StartupGrace time.Duration
-	// Flash is the duration of the TX/RX flash.
-	Flash time.Duration
-	// Blink is the period of blinking patterns.
-	Blink time.Duration
 }
 
 // DefaultConfig returns the default timing.
 func DefaultConfig() Config {
-	return Config{Stale: 10 * time.Second, StartupGrace: 90 * time.Second, Flash: 150 * time.Millisecond, Blink: time.Second}
+	return Config{Stale: 10 * time.Second, StartupGrace: 90 * time.Second}
 }
 
-// Engine computes LED frames from successive status reads.
+// Engine turns status file reads into LED patterns.
 type Engine struct {
-	cfg        Config
-	start      time.Time
-	everValid  bool
-	havePrev   bool
-	lastTx     uint64
-	lastRx     uint64
-	flashUntil time.Time
+	cfg       Config
+	start     time.Time
+	everValid bool
+	red       Pattern
+	redWhy    string
 }
 
 // NewEngine creates an engine; start is the service start time.
 func NewEngine(cfg Config, start time.Time) *Engine {
-	return &Engine{cfg: cfg, start: start}
+	return &Engine{cfg: cfg, start: start, redWhy: "reserved (not used)"}
 }
 
-// Frame returns the color to show at now given the latest status read.
-func (e *Engine) Frame(now time.Time, snap state.Snapshot, readErr error) (Color, Mode) {
-	if readErr != nil || now.Sub(snap.Updated) > e.cfg.Stale {
+// SetRed is the hook for the reserved red LED (e.g. a future low-battery
+// monitor). Nothing in rar-bridge's status drives red.
+func (e *Engine) SetRed(p Pattern, why string) {
+	e.red, e.redWhy = p, why
+}
+
+// Evaluate decides the patterns from the latest status file read.
+func (e *Engine) Evaluate(now time.Time, snap state.Snapshot, readErr error) Status {
+	st := Status{Red: e.red, RedWhy: e.redWhy}
+
+	problem := ""
+	switch {
+	case readErr != nil:
+		problem = readErr.Error()
+	case now.Sub(snap.Updated) > e.cfg.Stale:
+		problem = fmt.Sprintf("status file not updated for %s", now.Sub(snap.Updated).Round(time.Second))
+	}
+	if problem != "" {
 		if !e.everValid && now.Sub(e.start) < e.cfg.StartupGrace {
-			return e.blink(now, White, Off), ModeStarting
+			st.Blue, st.Green = Blink, BlinkAlt
+			st.BlueWhy = "starting: waiting for rar-bridge (" + problem + ")"
+			st.GreenWhy = st.BlueWhy
+			return st
 		}
-		e.havePrev = false
-		return Red, ModeBridgeDown
+		st.Blue, st.Green = Blink, Blink
+		st.BlueWhy = "rar-bridge not running? (" + problem + ")"
+		st.GreenWhy = st.BlueWhy
+		return st
 	}
 	e.everValid = true
 
-	if e.havePrev && (snap.TxCount != e.lastTx || snap.RxCount != e.lastRx) {
-		e.flashUntil = now.Add(e.cfg.Flash)
-	}
-	e.lastTx, e.lastRx, e.havePrev = snap.TxCount, snap.RxCount, true
-
-	var base Color
-	var mode Mode
 	switch {
-	case snap.HaLow.State == state.HaLowConnected && snap.Forced:
-		base, mode = Cyan, ModeForced
+	case snap.HaLow.Fault:
+		st.Blue, st.BlueWhy = Blink, "openMANET problem: "+snap.HaLow.Error
 	case snap.HaLow.State == state.HaLowConnected:
-		base, mode = Blue, ModeConnected
+		st.Blue, st.BlueWhy = On, fmt.Sprintf("HaLow connected (%d neighbors)", snap.HaLow.Neighbors)
 	default:
-		base, mode = Green, ModeIsolated
+		st.Blue, st.BlueWhy = Off, "HaLow "+snap.HaLow.State
 	}
-	if now.Before(e.flashUntil) {
-		return White, mode
-	}
-	if !snap.Meshtastic.Connected {
-		return e.blink(now, base, Red), ModeRadioFault
-	}
-	return base, mode
-}
 
-// blink alternates between a and b, each for half the blink period.
-func (e *Engine) blink(now time.Time, a, b Color) Color {
-	half := e.cfg.Blink / 2
-	if half <= 0 {
-		return a
+	switch {
+	case snap.Meshtastic.Fault:
+		st.Green, st.GreenWhy = Blink, "Meshtastic radio problem: "+snap.Meshtastic.Error
+	case snap.Forwarding:
+		st.Green, st.GreenWhy = On, "fallover: traffic going over Meshtastic"
+	default:
+		st.Green, st.GreenWhy = Off, "Meshtastic standby (HaLow in use)"
 	}
-	if (now.Sub(e.start)/half)%2 == 0 {
-		return a
-	}
-	return b
+	return st
 }

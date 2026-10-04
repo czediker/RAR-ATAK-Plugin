@@ -29,7 +29,7 @@ bool() {
 
 start_service() {
 	config_load rar
-	local enabled leases
+	local enabled leases debug
 	config_get_bool enabled bridge enabled 1
 	[ "$enabled" = 1 ] || return 0
 
@@ -57,6 +57,9 @@ start_service() {
 	bool suppress_halow_dupes suppress-halow-dupes
 	config_get_bool leases bridge use_dhcp_leases 1
 	[ "$leases" = 1 ] || procd_append_param command "-lease-file="
+
+	config_get_bool debug global debug 0
+	[ "$debug" = 1 ] && procd_append_param command -debug
 
 	procd_set_param respawn 3600 5 0
 	procd_set_param stdout 1

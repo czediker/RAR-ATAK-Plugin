@@ -8,10 +8,10 @@
 | 11, 29 | 17, 5 | WM1302 HAT reset lines (check your HAT revision for others) |
 | **8** | **14 (TXD)** | → RAK4631 RXD1 |
 | **10** | **15 (RXD)** | ← RAK4631 TXD1 |
-| **36** | **16** | LED red cathode |
-| **38** | **20** | LED green cathode |
-| **40** | **21** | LED blue cathode |
-| 1 or 17 | — | 3.3 V for the LED common anode |
+| **36** | **16** | LED red anode (reserved, held off) |
+| **38** | **20** | LED green anode (Meshtastic) |
+| **40** | **21** | LED blue anode (HaLow) |
+| 39 (or any ground) | — | LED common cathode |
 | 6, 9, 14, 20, 25, 30, 34, 39 | — | Ground (one to the RAK4631) |
 
 GPIO 16/20/21 avoid the HaLow HAT's SPI/reset/IRQ pins, the UART and I²C.
@@ -110,39 +110,32 @@ radio (it then prints a checklist: PROTO mode, baud, crossed TX/RX, serial
 console). "Accepted" means the RAK received the message over the UART and
 queued it for LoRa; seeing `1`…`10` on another radio confirms the RF side.
 
-## RGB LED (common anode)
-
-### Direct drive (default, `active_low=1`)
+## RGB LED (common cathode)
 
 ```
-3.3 V (pin 1) ──────────┬─────────────┬─────────────┐
-                        │ anode       │             │
-                      [LED R]       [LED G]       [LED B]
-                        │ cathode     │             │
-                       R1            R2            R3
-                        │             │             │
-                   GPIO16 (36)   GPIO20 (38)   GPIO21 (40)
+GPIO21 (40) ── R_blue ──▶|── blue  ┐
+GPIO20 (38) ── R_green ─▶|── green ├── common cathode ── GND (pin 39)
+GPIO16 (36) ── R_red ───▶|── red   ┘   (red reserved)
 ```
 
-* Pin **low = LED on**. Never connect the anode to 5 V: with the pin high
-  (3.3 V) the red LED would still conduct and push current into the GPIO.
+* Default `active_low=0`: **pin high (3.3 V) = color on**.
 * Resistors: size from the LED datasheet for ≤ 8 mA per pin. Typical values
-  are ~150 Ω for red and 22–47 Ω for green/blue. At 3.3 V, green and blue
-  are noticeably dimmer than red because their forward voltage is ~3 V.
-
-### Transistor drive (brighter, `active_low=0`)
-
-For a daylight-visible LED, power the anode from 5 V and switch each cathode
-with a small N-channel MOSFET (e.g. 2N7002) or NPN transistor driven by the
-GPIO. Then **pin high = LED on**; set `uci set rar.led.active_low=0`.
+  are ~150 Ω for red and 22–47 Ω for green/blue. At 3.3 V green and blue are
+  noticeably dimmer than red because their forward voltage is ~3 V. For a
+  brighter LED, drive each anode from 5 V through a high-side switch (for
+  example a PNP transistor or P-channel MOSFET with its own small driver),
+  keeping `active_low` matched to the driver's logic.
+* Red is wired but reserved for a future low-battery indication. `rar-led`
+  claims the pin and holds it low. To drive it later without code changes,
+  set `uci set rar.led.red_file=/var/run/rar/led-red` and write `on`, `off`
+  or `blink` to that file.
+* If a common-anode LED is ever used instead, set `uci set rar.led.active_low=1`.
 
 ### Keep the LED off during boot
 
-Until `rar-led` starts, the pins are inputs with pull-downs, which can make a
-directly driven common-anode LED glow faintly. Add to `config.txt`:
+Until `rar-led` starts, the pins are inputs. Drive them low (off) from
+boot by adding to `config.txt`:
 
 ```ini
-# Direct drive (active low): drive high = off
-gpio=16,20,21=op,dh
-# Transistor drive (active high) instead: gpio=16,20,21=op,dl
+gpio=16,20,21=op,dl
 ```

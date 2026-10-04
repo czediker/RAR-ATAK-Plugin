@@ -11,13 +11,18 @@
 //
 // The Bridge type holds all state and is driven from a single goroutine
 // (see Loop), so it needs no locking.
+//
+// Everything the bridge decides is logged at debug level (rar-bridge
+// -debug) so a message can be followed from the plugin to the radio and
+// back.
 package bridge
 
 import (
-	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 	"net/netip"
+	"slices"
 	"time"
 
 	"github.com/czediker/rar-atak-plugin/pi/internal/cot"
@@ -53,9 +58,10 @@ type Radio interface {
 	Status() meshtastic.Status
 }
 
-// Deliverer sends a CoT event to a local EUD.
+// Deliverer sends a CoT event to a local EUD and returns the destination
+// it used (ip:port) for logging.
 type Deliverer interface {
-	Deliver(addr netip.Addr, data []byte) error
+	Deliver(addr netip.Addr, data []byte) (dest string, err error)
 }
 
 // Config holds the bridge policy settings.
@@ -84,6 +90,11 @@ type Config struct {
 	SuppressHaLowDupes bool
 	// DedupeWindow is how long received packet IDs are remembered.
 	DedupeWindow time.Duration
+	// AckTimeout is how long to wait for the radio to confirm a packet.
+	AckTimeout time.Duration
+	// MeshFaultHold keeps the Meshtastic fault flag set this long after a
+	// failed, rejected or unconfirmed packet.
+	MeshFaultHold time.Duration
 }
 
 // DefaultConfig returns the documented defaults.
@@ -100,6 +111,8 @@ func DefaultConfig() Config {
 		ChatStale:          24 * time.Hour,
 		SuppressHaLowDupes: true,
 		DedupeWindow:       10 * time.Minute,
+		AckTimeout:         10 * time.Second,
+		MeshFaultHold:      30 * time.Second,
 	}
 }
 
@@ -108,6 +121,7 @@ type queuedChat struct {
 	enqueued time.Time
 	failures int
 	desc     string
+	uid      string
 }
 
 type queuedPLI struct {
@@ -121,6 +135,13 @@ type queuedPLI struct {
 type sentPLI struct {
 	at       time.Time
 	lat, lon float64
+}
+
+// inFlight is a packet handed to the radio, awaiting its QueueStatus.
+type inFlight struct {
+	kind, who, uid string
+	bytes          int
+	at             time.Time
 }
 
 type rxKey struct{ from, id uint32 }
@@ -148,10 +169,17 @@ type Bridge struct {
 	lastPLI map[string]sentPLI
 	lastTx  time.Time
 
+	inFlight      map[uint32]inFlight
+	meshErr       string
+	meshErrAt     time.Time
+	radioWasReady bool
+	waitingLogged bool
+
 	lastForced time.Time
 	senders    map[string]takconv.Sender
 	positions  map[string]position
 	rxSeen     map[rxKey]time.Time
+	targets    []netip.Addr
 
 	txCount, rxCount uint64
 	lastTxAt         time.Time
@@ -168,6 +196,7 @@ func New(cfg Config, radio Radio, deliver Deliverer, euds *eud.Registry, seen *h
 		radio: radio, deliver: deliver, euds: euds, seen: seen,
 		plis:      map[string]*queuedPLI{},
 		lastPLI:   map[string]sentPLI{},
+		inFlight:  map[uint32]inFlight{},
 		senders:   map[string]takconv.Sender{},
 		positions: map[string]position{},
 		rxSeen:    map[rxKey]time.Time{},
@@ -182,9 +211,9 @@ func (b *Bridge) Forwarding() bool { return b.link != halow.LinkConnected }
 // SetLink records a HaLow monitor report.
 func (b *Bridge) SetLink(r halow.Report) {
 	if r.Link != b.link && r.Link == halow.LinkConnected {
-		b.log.Info("HaLow neighbors present; port 6700 traffic stays on HaLow")
+		b.log.Info("HaLow neighbors present; port 6700 traffic stays on HaLow", "neighbors", r.Neighbors)
 	} else if r.Link != b.link && r.Link == halow.LinkIsolated {
-		b.log.Info("no HaLow neighbors; forwarding port 6700 traffic over Meshtastic")
+		b.log.Info("no HaLow neighbors; FALLOVER: forwarding port 6700 traffic over Meshtastic")
 	}
 	b.link, b.neighbors = r.Link, r.Neighbors
 	b.linkErr = ""
@@ -197,14 +226,16 @@ func (b *Bridge) SetLink(r halow.Report) {
 func (b *Bridge) HandleEUD(port Port, src netip.Addr, data []byte, now time.Time) {
 	ev, err := cot.Parse(data)
 	if err != nil {
-		b.log.Debug("ignoring non-CoT datagram", "port", port, "src", src, "err", err)
+		b.log.Debug("plugin datagram is not CoT; ignored", "port", port, "src", src, "bytes", len(data), "err", err, "start", preview(data))
 		return
 	}
 	uid := ev.UID
 	if ev.IsChat() {
 		uid = ev.Chat.SenderUID
 	}
-	b.euds.Learn(src, uid, now)
+	if newAddr, newUID := b.euds.Learn(src, uid, now); newAddr || newUID {
+		b.log.Info("local EUD learned from plugin traffic", "addr", src, "uid", uid, "new_addr", newAddr, "new_uid", newUID)
+	}
 	if port == PortAlways {
 		b.lastForced = now
 	}
@@ -212,8 +243,14 @@ func (b *Bridge) HandleEUD(port Port, src netip.Addr, data []byte, now time.Time
 		b.senders[ev.UID] = takconv.Sender{Team: ev.Team, Role: ev.Role, Battery: ev.Battery}
 	}
 	forward := port == PortAlways || b.Forwarding()
-	b.log.Debug("from plugin", "port", port, "src", src, "type", ev.Type, "uid", uid, "forward", forward)
+	b.log.Debug("plugin message received", append([]any{"port", port, "src", src, "cot_bytes", len(data), "forward", forward}, eventAttrs(ev)...)...)
+
+	if !ev.IsChat() && !ev.IsPLI() {
+		b.log.Debug("CoT type not carried over Meshtastic; ignored", "type", ev.Type, "uid", ev.UID)
+		return
+	}
 	if !forward {
+		b.log.Debug("not sent to Meshtastic: HaLow has neighbors and this arrived on the auto port", "uid", uid)
 		return
 	}
 
@@ -228,46 +265,76 @@ func (b *Bridge) HandleEUD(port Port, src netip.Addr, data []byte, now time.Time
 			return
 		}
 		if len(b.chats) >= b.cfg.ChatQueueMax {
-			b.log.Warn("chat queue full; dropping oldest", "desc", b.chats[0].desc)
+			b.log.Warn("chat queue full; dropping oldest unsent chat", "desc", b.chats[0].desc)
 			b.chats = b.chats[1:]
 		}
-		b.chats = append(b.chats, queuedChat{payload: payload, enqueued: now, desc: ev.Chat.SenderCallsign + " → " + ev.Chat.ToUID})
+		desc := ev.Chat.SenderCallsign + " → " + ev.Chat.ToUID
+		b.chats = append(b.chats, queuedChat{payload: payload, enqueued: now, desc: desc, uid: uid})
+		b.log.Debug("chat queued for Meshtastic", "desc", desc, "takpacket_bytes", len(payload), "chats_waiting", len(b.chats))
 	case ev.IsPLI():
 		payload, err := b.encode(ev, nil)
 		if err != nil {
 			return
 		}
-		b.plis[ev.UID] = &queuedPLI{payload: payload, lat: ev.Lat, lon: ev.Lon, port: port, enqueued: now, callsign: ev.Callsign}
-	default:
-		b.log.Debug("ignoring CoT type", "type", ev.Type)
+		if old, ok := b.plis[ev.UID]; ok {
+			b.log.Debug("newer position replaces an unsent queued one (only the latest is sent)", "uid", ev.UID, "replaced_age", now.Sub(old.enqueued).Round(time.Millisecond))
+		}
+		q := &queuedPLI{payload: payload, lat: ev.Lat, lon: ev.Lon, port: port, enqueued: now, callsign: ev.Callsign}
+		b.plis[ev.UID] = q
+		attrs := []any{"uid", ev.UID, "takpacket_bytes", len(payload)}
+		if wait := b.pliWait(ev.UID, q, now); wait > 0 {
+			attrs = append(attrs, "rate_limited_for", wait.Round(time.Second))
+		}
+		b.log.Debug("position queued for Meshtastic", attrs...)
 	}
 }
 
 func (b *Bridge) encode(ev *cot.Event, sender *takconv.Sender) ([]byte, error) {
 	pkt, err := takconv.FromEvent(ev, sender)
 	if err == nil {
+		textBefore := pkt.GetChat().GetMessage()
 		var payload []byte
 		if payload, err = takconv.Marshal(pkt); err == nil {
+			if c := pkt.GetChat(); c != nil && len(c.GetMessage()) < len(textBefore) {
+				b.log.Warn("chat text truncated to fit a Meshtastic packet", "uid", ev.UID, "from_bytes", len(textBefore), "to_bytes", len(c.GetMessage()))
+			}
+			b.log.Debug("converted to TAKPacket", append([]any{"takpacket_bytes", len(payload), "max", takconv.MaxPayload}, packetAttrs(pkt)...)...)
 			return payload, nil
 		}
 	}
-	b.log.Warn("cannot convert CoT to TAKPacket", "uid", ev.UID, "type", ev.Type, "err", err)
+	b.log.Warn("cannot convert CoT to TAKPacket; not sent", "uid", ev.UID, "type", ev.Type, "err", err)
 	return nil, err
 }
 
 // Tick expires old state and transmits at most one queued packet.
 func (b *Bridge) Tick(now time.Time) {
 	b.expire(now)
+	b.checkAcks(now)
+	b.logTargets(now)
 
-	if !b.radio.Status().Connected {
+	st := b.radio.Status()
+	if st.Connected != b.radioWasReady {
+		if st.Connected {
+			b.log.Info("Meshtastic radio ready", "node", meshtastic.NodeID(st.NodeNum))
+		} else {
+			b.log.Warn("Meshtastic radio not available", "err", st.LastError)
+		}
+		b.radioWasReady = st.Connected
+	}
+	if !st.Connected {
+		if (len(b.chats) > 0 || len(b.plis) > 0) && !b.waitingLogged {
+			b.log.Debug("messages waiting for the Meshtastic radio", "chats", len(b.chats), "positions", len(b.plis))
+			b.waitingLogged = true
+		}
 		return
 	}
+	b.waitingLogged = false
 	if !b.lastTx.IsZero() && now.Sub(b.lastTx) < b.cfg.TxGap {
 		return
 	}
 	if len(b.chats) > 0 {
 		c := &b.chats[0]
-		if b.send(c.payload, now, "chat", c.desc) {
+		if b.send(c.payload, now, "chat", c.desc, c.uid) {
 			b.chats = b.chats[1:]
 		} else if c.failures++; c.failures >= 3 {
 			b.log.Warn("giving up on chat after repeated send failures", "desc", c.desc)
@@ -276,7 +343,7 @@ func (b *Bridge) Tick(now time.Time) {
 		return
 	}
 	if uid, q := b.nextPLI(now); q != nil {
-		if b.send(q.payload, now, "position", q.callsign) {
+		if b.send(q.payload, now, "position", q.callsign, uid) {
 			delete(b.plis, uid)
 			b.lastPLI[uid] = sentPLI{at: now, lat: q.lat, lon: q.lon}
 		}
@@ -288,7 +355,7 @@ func (b *Bridge) nextPLI(now time.Time) (string, *queuedPLI) {
 	var bestUID string
 	var best *queuedPLI
 	for uid, q := range b.plis {
-		if !b.pliDue(uid, q, now) {
+		if b.pliWait(uid, q, now) > 0 {
 			continue
 		}
 		if best == nil || q.enqueued.Before(best.enqueued) {
@@ -298,42 +365,80 @@ func (b *Bridge) nextPLI(now time.Time) (string, *queuedPLI) {
 	return bestUID, best
 }
 
-func (b *Bridge) pliDue(uid string, q *queuedPLI, now time.Time) bool {
+// pliWait returns how long the position for uid must still wait (0 = due).
+func (b *Bridge) pliWait(uid string, q *queuedPLI, now time.Time) time.Duration {
 	last, ok := b.lastPLI[uid]
 	if !ok {
-		return true
+		return 0
 	}
 	elapsed := now.Sub(last.at)
-	if elapsed >= b.cfg.PLIInterval {
-		return true
+	wait := b.cfg.PLIInterval - elapsed
+	if distanceMeters(last.lat, last.lon, q.lat, q.lon) >= b.cfg.PLIMoveMeters {
+		wait = min(wait, b.cfg.PLIMinInterval-elapsed)
 	}
-	return elapsed >= b.cfg.PLIMinInterval && distanceMeters(last.lat, last.lon, q.lat, q.lon) >= b.cfg.PLIMoveMeters
+	return max(wait, 0)
 }
 
-func (b *Bridge) send(payload []byte, now time.Time, kind, desc string) bool {
+func (b *Bridge) send(payload []byte, now time.Time, kind, who, uid string) bool {
 	b.lastTx = now
 	id, err := b.radio.SendData(meshpb.PortNum_ATAK_PLUGIN, payload)
 	if err != nil {
-		if !errors.Is(err, meshtastic.ErrNotConnected) {
-			b.log.Warn("meshtastic send failed", "kind", kind, "err", err)
-		}
+		b.meshFault(now, "send failed: "+err.Error())
+		b.log.Warn("FAILED to pass message to Meshtastic radio", "kind", kind, "who", who, "uid", uid, "err", err)
 		return false
 	}
 	b.txCount++
 	b.lastTxAt = now
-	b.log.Info("sent over meshtastic", "kind", kind, "who", desc, "bytes", len(payload), "id", id)
+	b.inFlight[id] = inFlight{kind: kind, who: who, uid: uid, bytes: len(payload), at: now}
+	b.log.Info("passed to Meshtastic radio", "kind", kind, "who", who, "uid", uid, "bytes", len(payload), "packet_id", id)
 	return true
+}
+
+// HandleAck processes the radio's QueueStatus for a packet we sent.
+func (b *Bridge) HandleAck(qs *meshpb.QueueStatus, now time.Time) {
+	id := qs.GetMeshPacketId()
+	f, ok := b.inFlight[id]
+	if !ok {
+		if id != 0 {
+			b.log.Debug("radio queue status for a packet not sent by the bridge", "packet_id", id, "res", qs.GetRes())
+		}
+		return
+	}
+	delete(b.inFlight, id)
+	attrs := []any{"kind", f.kind, "who", f.who, "uid", f.uid, "packet_id", id, "queue_free", qs.GetFree(), "queue_max", qs.GetMaxlen(), "after", now.Sub(f.at).Round(time.Millisecond)}
+	// 0 = OK; 35 = "no error, caller frees" (see the firmware's MeshTypes.h).
+	if res := qs.GetRes(); res != 0 && res != 35 {
+		b.meshFault(now, fmt.Sprintf("radio rejected packet %08x (error %d)", id, res))
+		b.log.Warn("Meshtastic radio REJECTED the message", append(attrs, "error_code", res)...)
+		return
+	}
+	b.log.Debug("Meshtastic radio accepted the message for transmission", attrs...)
+}
+
+func (b *Bridge) checkAcks(now time.Time) {
+	for id, f := range b.inFlight {
+		if now.Sub(f.at) > b.cfg.AckTimeout {
+			delete(b.inFlight, id)
+			b.meshFault(now, fmt.Sprintf("radio did not confirm packet %08x", id))
+			b.log.Warn("Meshtastic radio did not confirm the message", "kind", f.kind, "who", f.who, "uid", f.uid, "packet_id", id, "waited", b.cfg.AckTimeout)
+		}
+	}
+}
+
+func (b *Bridge) meshFault(now time.Time, msg string) {
+	b.meshErr, b.meshErrAt = msg, now
 }
 
 func (b *Bridge) expire(now time.Time) {
 	for len(b.chats) > 0 && now.Sub(b.chats[0].enqueued) > b.cfg.ChatMaxAge {
-		b.log.Warn("dropping chat that could not be sent in time", "desc", b.chats[0].desc)
+		b.log.Warn("dropping chat that could not be sent in time", "desc", b.chats[0].desc, "max_age", b.cfg.ChatMaxAge)
 		b.chats = b.chats[1:]
 	}
 	for uid, q := range b.plis {
 		// Position reports that only needed Meshtastic because HaLow was
 		// down are stale once HaLow is back.
 		if q.port == PortAuto && !b.Forwarding() {
+			b.log.Debug("dropping queued position: HaLow is back", "uid", uid)
 			delete(b.plis, uid)
 		}
 	}
@@ -354,32 +459,59 @@ func (b *Bridge) expire(now time.Time) {
 	}
 }
 
+// logTargets reports changes to the set of EUDs that receive Meshtastic
+// traffic.
+func (b *Bridge) logTargets(now time.Time) {
+	t := b.euds.Targets(now)
+	if slices.Equal(t, b.targets) {
+		return
+	}
+	b.log.Debug("EUD delivery targets changed", "targets", fmt.Sprint(t), "previous", fmt.Sprint(b.targets))
+	b.targets = t
+}
+
 // HandleRadio processes a packet received from the Meshtastic radio.
 func (b *Bridge) HandleRadio(p *meshpb.MeshPacket, now time.Time) {
 	d := p.GetDecoded()
-	if d == nil || d.GetPortnum() != meshpb.PortNum_ATAK_PLUGIN {
+	if d == nil {
+		b.log.Debug("Meshtastic packet could not be decrypted by the radio (different channel/key); ignored", meshAttrs(p)...)
+		return
+	}
+	attrs := append(meshAttrs(p), "portnum", d.GetPortnum(), "payload_bytes", len(d.GetPayload()))
+	if d.GetPortnum() != meshpb.PortNum_ATAK_PLUGIN {
+		if d.GetPortnum() == meshpb.PortNum_TEXT_MESSAGE_APP {
+			attrs = append(attrs, "text", string(d.GetPayload()))
+		}
+		b.log.Debug("Meshtastic packet is not ATAK traffic; ignored", attrs...)
 		return
 	}
 	key := rxKey{p.GetFrom(), p.GetId()}
-	if _, dup := b.rxSeen[key]; dup {
+	if first, dup := b.rxSeen[key]; dup {
+		b.log.Debug("DUPLICATE Meshtastic packet; already handled", append(attrs, "first_seen_ago", now.Sub(first).Round(time.Millisecond))...)
 		return
 	}
 	pkt, err := takconv.Decode(d.GetPayload())
 	if err != nil {
-		b.log.Warn("bad TAKPacket", "from", meshtastic.NodeID(p.GetFrom()), "err", err)
+		b.log.Warn("bad TAKPacket from Meshtastic", append(attrs, "err", err)...)
 		return
 	}
+	b.log.Debug("ATAK data received from Meshtastic", append(attrs, packetAttrs(pkt)...)...)
 	if pkt.GetIsCompressed() {
 		// Older firmware/plugins compress strings with unishox2. Firmware
 		// that does this also hands clients a decompressed copy with the
 		// same packet ID, so skip without marking the ID as seen.
-		b.log.Debug("skipping compressed TAKPacket", "from", meshtastic.NodeID(p.GetFrom()), "id", p.GetId())
+		b.log.Debug("compressed TAKPacket skipped; waiting for the radio's uncompressed copy", "from", meshtastic.NodeID(p.GetFrom()), "packet_id", p.GetId())
 		return
 	}
 	b.rxSeen[key] = now
 
 	uid := takconv.SenderUID(pkt)
-	if uid == "" || b.euds.IsLocalUID(uid, now) {
+	if uid == "" {
+		b.log.Debug("TAKPacket has no sender UID; ignored", "from", meshtastic.NodeID(p.GetFrom()))
+		return
+	}
+	if b.euds.IsLocalUID(uid, now) {
+		b.log.Debug("TAKPacket is from this radio's own EUD; ignored (DEDUPE)", "uid", uid)
 		return
 	}
 	b.rxCount++
@@ -392,14 +524,15 @@ func (b *Bridge) HandleRadio(p *meshpb.MeshPacket, now time.Time) {
 		b.positions[uid] = position{pos: pos, at: now}
 	}
 	if b.cfg.SuppressHaLowDupes && b.seen != nil && b.seen.Recently(uid, now) {
-		b.log.Debug("dropping meshtastic copy of traffic already heard over HaLow", "uid", uid)
+		last, _ := b.seen.LastHeard(uid)
+		b.log.Debug("DEDUPE: sender is reachable over HaLow, so the EUD already has this; Meshtastic copy dropped", "uid", uid, "heard_over_halow_ago", now.Sub(last).Round(time.Second))
 		return
 	}
 	if chat := pkt.GetChat(); chat != nil {
 		to := chat.GetTo()
 		if to != "" && to != cot.AllChatRooms {
-			if local := b.euds.LocalUIDs(now); len(local) > 0 && !contains(local, to) {
-				b.log.Debug("direct message for another user", "to", to)
+			if local := b.euds.LocalUIDs(now); len(local) > 0 && !slices.Contains(local, to) {
+				b.log.Debug("direct message for another user; not delivered", "to", to, "local_uids", fmt.Sprint(local))
 				return
 			}
 		}
@@ -418,24 +551,26 @@ func (b *Bridge) HandleRadio(p *meshpb.MeshPacket, now time.Time) {
 		},
 	})
 	if err != nil {
-		b.log.Debug("unsupported TAKPacket", "from", meshtastic.NodeID(p.GetFrom()), "err", err)
+		b.log.Debug("TAKPacket type not converted to CoT; ignored", "from", meshtastic.NodeID(p.GetFrom()), "err", err)
 		return
 	}
+	kind := kindOf(pkt)
 	targets := b.euds.Targets(now)
 	if len(targets) == 0 {
-		b.log.Info("received over meshtastic but no local EUD known yet", "uid", uid)
+		b.log.Warn("received over Meshtastic but no local EUD is known yet; not delivered", "kind", kind, "uid", uid)
 		return
 	}
-	kind := "position"
-	if pkt.GetChat() != nil {
-		kind = "chat"
-	}
+	delivered := 0
 	for _, a := range targets {
-		if err := b.deliver.Deliver(a, x); err != nil {
-			b.log.Warn("delivery to EUD failed", "addr", a, "err", err)
+		dest, err := b.deliver.Deliver(a, x)
+		if err != nil {
+			b.log.Warn("FAILED to send to ATAK", "kind", kind, "uid", uid, "dest", dest, "err", err)
+			continue
 		}
+		delivered++
+		b.log.Debug("sent to ATAK", "kind", kind, "uid", uid, "dest", dest, "cot_bytes", len(x))
 	}
-	b.log.Info("received over meshtastic", "kind", kind, "callsign", pkt.GetContact().GetCallsign(), "from", meshtastic.NodeID(p.GetFrom()), "euds", len(targets))
+	b.log.Info("received over Meshtastic and sent to ATAK", "kind", kind, "callsign", pkt.GetContact().GetCallsign(), "uid", uid, "from", meshtastic.NodeID(p.GetFrom()), "euds", delivered, "of", len(targets))
 }
 
 // Snapshot returns the status for the LED service.
@@ -451,13 +586,34 @@ func (b *Bridge) Snapshot(now time.Time) state.Snapshot {
 		s.HaLow.State = state.HaLowUnknown
 	}
 	s.HaLow.Neighbors = b.neighbors
-	s.HaLow.Error = b.linkErr
+	halowErr := b.linkErr
+	if b.seen != nil {
+		if le := b.seen.ListenerError(); le != "" {
+			if halowErr != "" {
+				halowErr += "; "
+			}
+			halowErr += "multicast listener: " + le
+		}
+	}
+	s.HaLow.Error = halowErr
+	s.HaLow.Fault = halowErr != ""
+
 	st := b.radio.Status()
 	s.Meshtastic.Connected = st.Connected
 	if st.NodeNum != 0 {
 		s.Meshtastic.Node = meshtastic.NodeID(st.NodeNum)
 	}
-	s.Meshtastic.Error = st.LastError
+	recent := !b.meshErrAt.IsZero() && now.Sub(b.meshErrAt) <= b.cfg.MeshFaultHold
+	switch {
+	case !st.Connected && st.LastError != "":
+		s.Meshtastic.Error = st.LastError
+	case !st.Connected:
+		s.Meshtastic.Error = "radio not connected (no config handshake yet)"
+	case recent:
+		s.Meshtastic.Error = b.meshErr
+	}
+	s.Meshtastic.Fault = !st.Connected || recent
+
 	s.Forwarding = b.Forwarding()
 	s.Forced = !b.lastForced.IsZero() && now.Sub(b.lastForced) <= b.cfg.ForcedWindow
 	s.TxCount, s.RxCount = b.txCount, b.rxCount
@@ -468,13 +624,13 @@ func (b *Bridge) Snapshot(now time.Time) state.Snapshot {
 	return s
 }
 
-func contains(xs []string, s string) bool {
-	for _, x := range xs {
-		if x == s {
-			return true
-		}
+// preview returns the start of a datagram for logs.
+func preview(data []byte) string {
+	const n = 60
+	if len(data) > n {
+		return string(data[:n]) + "…"
 	}
-	return false
+	return string(data)
 }
 
 // distanceMeters is the great-circle distance between two points.
