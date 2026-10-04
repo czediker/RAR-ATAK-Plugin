@@ -24,7 +24,6 @@ func eventAttrs(ev *cot.Event) []any {
 			"chatroom", c.Chatroom,
 			"message_id", c.MessageID,
 			"text_bytes", len(c.Text),
-			"text", c.Text,
 			"cot_uid", ev.UID,
 		}
 	}
@@ -79,8 +78,7 @@ func packetAttrs(pkt *meshpb.TAKPacket) []any {
 		attrs = append(attrs, "kind", "chat",
 			"to", c.GetTo(),
 			"to_callsign", c.GetToCallsign(),
-			"text_bytes", len(c.GetMessage()),
-			"text", c.GetMessage())
+			"text_bytes", len(c.GetMessage()))
 	case pkt.GetDetail() != nil:
 		attrs = append(attrs, "kind", "detail", "detail_bytes", len(pkt.GetDetail()))
 	}

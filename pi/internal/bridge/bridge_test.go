@@ -436,6 +436,7 @@ func TestDebugTrail(t *testing.T) {
 	h.requireLog(t, "plugin message received", "uid=ANDROID-self", "callsign=ALPHA", "team=Cyan", "role=\"Team Lead\"",
 		"cot_bytes=", "not sent to Meshtastic: HaLow has neighbors", "local EUD learned")
 
+	h.b.HandleEUD(PortAlways, phone, chat("outgoing secret"), at(0.5))
 	h.b.HandleEUD(PortAlways, phone, pli(1, 2), at(1))
 	h.b.HandleEUD(PortAlways, phone, pli(1, 2.001), at(1.5))
 	h.requireLog(t, "converted to TAKPacket", "takpacket_bytes=", "position queued for Meshtastic", "newer position replaces an unsent queued one")
@@ -444,12 +445,17 @@ func TestDebugTrail(t *testing.T) {
 
 	h.b.HandleRadio(radioPacket(0x1111, 9, remoteChat("ANDROID-bravo", cot.AllChatRooms, "hello")), at(3))
 	h.b.HandleRadio(radioPacket(0x1111, 9, remoteChat("ANDROID-bravo", cot.AllChatRooms, "hello")), at(4))
-	h.requireLog(t, "ATAK data received from Meshtastic", "payload_bytes=", "text=hello", "sent to ATAK", "dest=10.41.113.200:4242", "DUPLICATE Meshtastic packet")
+	h.requireLog(t, "ATAK data received from Meshtastic", "payload_bytes=", "text_bytes=5", "sent to ATAK", "dest=10.41.113.200:4242", "DUPLICATE Meshtastic packet")
 
 	h.seen.Mark("ANDROID-charlie", at(5))
 	h.b.HandleRadio(radioPacket(0x2222, 1, remotePLI("ANDROID-charlie")), at(6))
 	h.requireLog(t, "DEDUPE: sender is reachable over HaLow")
 
 	h.b.HandleRadio(&meshpb.MeshPacket{From: 3, Id: 1, PayloadVariant: &meshpb.MeshPacket_Decoded{Decoded: &meshpb.Data{Portnum: meshpb.PortNum_TEXT_MESSAGE_APP, Payload: []byte("7")}}}, at(7))
-	h.requireLog(t, "not ATAK traffic; ignored", "text=7")
+	h.requireLog(t, "not ATAK traffic; ignored", "portnum=TEXT_MESSAGE_APP", "payload_bytes=1")
+
+	// Message text is never logged, only its size.
+	if strings.Contains(h.logs.String(), "text=") {
+		t.Errorf("message text logged:\n%s", h.logs.String())
+	}
 }

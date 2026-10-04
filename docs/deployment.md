@@ -151,7 +151,7 @@ service=rar-led    … msg="LED change committed" color=green from=off to=solid 
 service=rar-bridge … msg="converted to TAKPacket" takpacket_bytes=51 max=233 uid=ANDROID-self callsign=ALPHA …
 service=rar-bridge … msg="passed to Meshtastic radio" kind=position who=ALPHA uid=ANDROID-self bytes=51 packet_id=1650537516
 service=rar-bridge … msg="Meshtastic radio accepted the message for transmission" packet_id=1650537516 queue_free=15 queue_max=16
-service=rar-bridge … msg="ATAK data received from Meshtastic" from=!1111beef packet_id=4242 rssi=-97 snr=6.5 hop_limit=2 hop_start=3 payload_bytes=60 uid=ANDROID-bravo callsign=BRAVO kind=chat text="hello from bravo"
+service=rar-bridge … msg="ATAK data received from Meshtastic" from=!1111beef packet_id=4242 rssi=-97 snr=6.5 hop_limit=2 hop_start=3 payload_bytes=60 uid=ANDROID-bravo callsign=BRAVO kind=chat to="All Chat Rooms" text_bytes=16
 service=rar-bridge … msg="sent to ATAK" kind=chat uid=ANDROID-bravo dest=10.41.113.200:4242 cot_bytes=869
 service=rar-bridge … msg="DUPLICATE Meshtastic packet; already handled" from=!1111beef packet_id=4242 first_seen_ago=301ms
 ```
@@ -160,9 +160,9 @@ What is logged:
 
 | Event | Messages |
 |-------|----------|
-| Plugin traffic on 6700/6701 | `UDP datagram from plugin`, `plugin message received` (size, ATAK UID, callsign, type, position, team, role, battery, speed/course or chat to/text), `not sent to Meshtastic: …`, `converted to TAKPacket` (size), `position queued` / `chat queued` (incl. rate limit wait), `newer position replaces an unsent queued one` |
+| Plugin traffic on 6700/6701 | `UDP datagram from plugin`, `plugin message received` (size, ATAK UID, callsign, type, position, team, role, battery, speed/course, or chat recipient and text size — never the text itself), `not sent to Meshtastic: …`, `converted to TAKPacket` (size), `position queued` / `chat queued` (incl. rate limit wait), `newer position replaces an unsent queued one` |
 | Hand-off to Meshtastic | `passed to Meshtastic radio` / `FAILED to pass message to Meshtastic radio`, then `Meshtastic radio accepted …` / `REJECTED …` / `did not confirm …` |
-| Received from Meshtastic | `ATAK data received from Meshtastic` (node, packet ID, RSSI, SNR, hops, size, ATAK UID/metadata), `sent to ATAK` (ip:port) / `FAILED to send to ATAK`, non-ATAK packets (`not ATAK traffic; ignored`, with the text of text messages) |
+| Received from Meshtastic | `ATAK data received from Meshtastic` (node, packet ID, RSSI, SNR, hops, size, ATAK UID/metadata), `sent to ATAK` (ip:port) / `FAILED to send to ATAK`, non-ATAK packets (`not ATAK traffic; ignored`, with port and size) |
 | De-duplication | `DUPLICATE Meshtastic packet`, `DEDUPE: sender is reachable over HaLow …`, `TAKPacket is from this radio's own EUD`, `ATAK user heard over HaLow …`, `direct message for another user` |
 | State | `state.json change committed` (field-by-field diff), `HaLow link state committed`, `HaLow neighbor set changed`, fallover countdown / cancel, `openMANET neighbor query failed`, multicast listener errors |
 | Radio | serial port opened, config handshake, firmware/preset/channels, heartbeat, radio ready / not available, radio console and log lines |

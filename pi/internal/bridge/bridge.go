@@ -479,9 +479,6 @@ func (b *Bridge) HandleRadio(p *meshpb.MeshPacket, now time.Time) {
 	}
 	attrs := append(meshAttrs(p), "portnum", d.GetPortnum(), "payload_bytes", len(d.GetPayload()))
 	if d.GetPortnum() != meshpb.PortNum_ATAK_PLUGIN {
-		if d.GetPortnum() == meshpb.PortNum_TEXT_MESSAGE_APP {
-			attrs = append(attrs, "text", string(d.GetPayload()))
-		}
 		b.log.Debug("Meshtastic packet is not ATAK traffic; ignored", attrs...)
 		return
 	}
