@@ -61,12 +61,15 @@ then `logread -f -e rar` — see [deployment](docs/deployment.md#debug-logging).
 ## Quick start
 
 ```sh
-# Pi services: test, cross-compile for the Pi 4 and install on a radio
+# Pi services: build for the Pi 4 and install/upgrade on a radio
 cd pi
-make test
-make install HOST=root@<radio-ip>
+make install HOST=root@<radio-ip>                                    # Linux / macOS / WSL
+powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Radio <radio-ip>   # Windows
 ssh root@<radio-ip> "uci set rar.bridge.halow_iface='wlan0'; uci commit rar"   # your HaLow interface
 ```
+
+Add `RESET=1` / `-ResetConfig` to reset `/etc/config/rar` to the release
+defaults while keeping the radio's own settings.
 
 Build the plugin inside your ATAK SDK — see [`atak-plugin/README.md`](atak-plugin/README.md).
 Full steps, including the Pi UART setup the RAK4631 needs, are in

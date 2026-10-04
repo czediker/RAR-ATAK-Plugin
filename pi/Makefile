@@ -1,15 +1,20 @@
 # Build, test and deploy the Raspberry Pi services.
 #
 #   make test               run unit tests
-#   make dist               cross-compile for the Pi 4 (arm64) and build a tarball
+#   make dist               cross-compile for the Pi 4 (arm64) and build a release tarball
 #   make install HOST=root@10.41.113.1
-#                           copy the tarball to a radio and (re)start the services
+#                           install/upgrade on a radio, keeping its /etc/config/rar
+#   make install HOST=root@10.41.113.1 RESET=1
+#                           same, but reset /etc/config/rar to the release defaults
+#                           (keeps the radio's HaLow interface, serial port, baud, ...)
+#
+# On Windows without make, use scripts/install.ps1 instead.
 
 GO      ?= go
 VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 BUILD   := build
-ROOTFS  := $(BUILD)/rootfs
+STAGE   := $(BUILD)/stage
 TARBALL := $(BUILD)/rar-radio-$(VERSION)-arm64.tar.gz
 CMDS    := rar-bridge rar-led rar-meshtest
 
@@ -35,26 +40,24 @@ arm64:
 		CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD)/arm64/$$c ./cmd/$$c || exit 1; \
 	done
 
+# The release tarball unpacks to a staging directory containing
+# rar-install.sh, which installs it on the radio.
 dist: arm64
-	rm -rf $(ROOTFS)
-	mkdir -p $(ROOTFS)/usr/bin $(ROOTFS)/etc/init.d $(ROOTFS)/etc/config
-	cp $(BUILD)/arm64/rar-bridge $(BUILD)/arm64/rar-led $(BUILD)/arm64/rar-meshtest $(ROOTFS)/usr/bin/
-	cp packaging/openwrt/files/etc/init.d/rar-bridge packaging/openwrt/files/etc/init.d/rar-led $(ROOTFS)/etc/init.d/
-	chmod 0755 $(ROOTFS)/usr/bin/* $(ROOTFS)/etc/init.d/*
-	# Shipped as rar.default so an install never overwrites edited settings.
-	cp packaging/openwrt/files/etc/config/rar $(ROOTFS)/etc/config/rar.default
-	# Files only, so extracting over / never changes existing directory modes.
-	cd $(ROOTFS) && find . -type f | sort | tar --owner=0 --group=0 --no-recursion -T - -czf ../$(notdir $(TARBALL))
+	rm -rf $(STAGE)
+	mkdir -p $(STAGE)/usr/bin $(STAGE)/etc/init.d $(STAGE)/etc/config
+	cp $(BUILD)/arm64/rar-bridge $(BUILD)/arm64/rar-led $(BUILD)/arm64/rar-meshtest $(STAGE)/usr/bin/
+	cp packaging/openwrt/files/etc/init.d/rar-bridge packaging/openwrt/files/etc/init.d/rar-led $(STAGE)/etc/init.d/
+	cp packaging/openwrt/files/etc/config/rar $(STAGE)/etc/config/rar.default
+	cp packaging/openwrt/rar-install.sh $(STAGE)/
+	chmod 0755 $(STAGE)/usr/bin/* $(STAGE)/etc/init.d/* $(STAGE)/rar-install.sh
+	cd $(STAGE) && find . -type f | sort | tar --owner=0 --group=0 --no-recursion -T - -czf ../$(notdir $(TARBALL))
 	@echo "built $(TARBALL)"
 
-# OpenWrt's dropbear has no SFTP server, so stream the tarball over ssh
-# instead of using scp.
+# One ssh session: stream the tarball (openMANET's dropbear has no SFTP
+# server for scp), unpack it in /tmp and run the installer.
 install: dist
-	@test -n "$(HOST)" || { echo "usage: make install HOST=root@<radio-ip>"; exit 1; }
-	ssh $(HOST) 'tar -xzf - -C /' < $(TARBALL)
-	ssh $(HOST) '[ -f /etc/config/rar ] || cp /etc/config/rar.default /etc/config/rar; \
-		/etc/init.d/rar-led enable; /etc/init.d/rar-bridge enable; \
-		/etc/init.d/rar-led restart; /etc/init.d/rar-bridge restart'
+	@test -n "$(HOST)" || { echo "usage: make install HOST=root@<radio-ip> [RESET=1]"; exit 1; }
+	ssh $(HOST) 'rm -rf /tmp/rar-stage && mkdir -p /tmp/rar-stage && tar -xzf - -C /tmp/rar-stage && sh /tmp/rar-stage/rar-install.sh $(if $(RESET),--reset-config,); rc=$$?; rm -rf /tmp/rar-stage; exit $$rc' < $(TARBALL)
 
 proto:
 	./scripts/gen-proto.sh

@@ -1,0 +1,5 @@
+# Files that run or are read on the radio (OpenWrt) must keep Unix line
+# endings, even in a Windows checkout.
+*.sh                text eol=lf
+pi/packaging/**     text eol=lf
+*.ps1               text eol=crlf

@@ -15,39 +15,56 @@
 
 ## 2. Build and install the Pi services
 
-On a workstation with Go 1.25+:
+You need Go 1.25+ on your workstation. One command builds the three
+programs for the Pi 4, copies them to the radio and runs the installer
+there (`rar-install.sh`), which stops the services, installs the files,
+updates the settings and starts everything again. Install and upgrade are
+the same command.
+
+**Windows (PowerShell):**
+
+```powershell
+cd pi
+powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Radio 10.41.x.1
+```
+
+**Linux / macOS / WSL:**
 
 ```sh
 cd pi
-make test                          # unit tests
-make install HOST=root@10.41.x.1   # cross-compile, copy, enable, start
+make install HOST=root@10.41.x.1
 ```
 
-`make install` streams a tarball over ssh (openMANET's dropbear has no SFTP),
-installs `/usr/bin/rar-bridge`, `/usr/bin/rar-led`, the init scripts, and
-`/etc/config/rar` (only if it does not exist yet; the shipped defaults are
-also kept as `/etc/config/rar.default`).
+You are asked for the radio's root password (twice on Windows) unless you
+use an SSH key.
 
-Without `make`: `make dist` produces `build/rar-radio-<version>-arm64.tar.gz`;
-extract it on the radio with `tar -xzf rar-radio-*.tar.gz -C /`, copy
-`/etc/config/rar.default` to `/etc/config/rar`, then
-`/etc/init.d/rar-led enable && /etc/init.d/rar-bridge enable` and start both.
+### Settings file on upgrade
 
-### Upgrading an installed radio
+`/etc/config/rar` is backed up to `/etc/config/rar.bak` on every install.
 
-`make install` never overwrites `/etc/config/rar`, so settings added in a
-newer release must be added by hand (compare with `/etc/config/rar.default`).
-For the debug option and the common-cathode LED:
+* Plain install/upgrade keeps your settings and only adds sections that are
+  new in the release (e.g. `global.debug`).
+* **Reset to the new defaults** with `-ResetConfig` (Windows) or `RESET=1`
+  (make). This radio's own settings are carried over: `halow_iface`,
+  `mesh_iface`, `serial_device`, `baud`, `channel`, `hop_limit`,
+  `mcast_iface` and `global.debug`. Everything else, including the LED
+  polarity, takes the release default.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Radio 10.41.x.1 -ResetConfig
+```
 
 ```sh
-uci set rar.global=global
-uci set rar.global.debug=0
-uci set rar.led.active_low=0
-uci commit rar
+make install HOST=root@10.41.x.1 RESET=1
 ```
 
-`rar-bridge` and `rar-led` share the status file format, so always install
-both from the same build.
+The installer prints the resulting settings. `rar-bridge` and `rar-led` share
+the status file format, so always install both from the same build (both
+commands do).
+
+By hand: `make dist` produces `build/rar-radio-<version>-arm64.tar.gz`. Copy
+it to the radio, unpack it into an empty directory and run
+`sh rar-install.sh [--reset-config]` from there.
 
 ## 3. Configure
 
