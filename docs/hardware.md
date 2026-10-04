@@ -36,16 +36,52 @@ RAK exposes on its UART only when the **Serial module runs in PROTO mode**:
 | mode | **PROTO** |
 | rxd / txd | 15 / 16 (RXD1 / TXD1) |
 | baud | 115200 (must match `rar.bridge.baud`) |
+| Position → GPS mode | **NOT_PRESENT** |
 
 With the Meshtastic CLI over USB, for example:
 
 ```sh
 meshtastic --set serial.enabled true --set serial.mode PROTO \
-           --set serial.rxd 15 --set serial.txd 16 --set serial.baud BAUD_115200
+           --set serial.rxd 15 --set serial.txd 16 --set serial.baud BAUD_115200 \
+           --set position.gps_mode NOT_PRESENT
 ```
 
-RAK4631 firmware also maps a WisBlock GNSS module to these pins; leave GPS
-off (or use a module in another slot) when the UART is used for the bridge.
+**GPS mode must be `NOT_PRESENT`; `DISABLED` is not enough.** The RAK4631
+firmware's GPS driver uses the same pins, 15 and 16. Unless the GPS mode is
+`NOT_PRESENT`, the radio opens that GPS serial port at boot alongside the
+Serial module. The radio still receives the Pi's messages, but its replies
+don't reach the Pi, so the bridge logs `no config response from radio` with
+`received_bytes=0`. Meshtastic's own
+[serial module docs](https://meshtastic.org/docs/configuration/module/serial/)
+give the same instruction. Don't fit a WisBlock GNSS module either: it would
+be wired to the same pins. ATAK takes its position from the phone, so the
+radio doesn't need a GPS.
+
+(Some RAK19003 base boards bring out UART0 instead: use rxd 19 / txd 20 and
+wire the Pi to RXD0/TXD0.)
+
+### Bluetooth while the bridge is connected
+
+When `rar-bridge` (or `rar-meshtest`) connects over the UART, the radio
+treats it as an app connected over serial:
+
+* **Firmware 2.7.x and older turn Bluetooth off while a serial app is
+  connected.** A phone connected over Bluetooth is dropped as soon as the
+  bridge connects, and can't reconnect while the bridge runs. If the phone
+  drops when the UART is plugged in, the radio is hearing the Pi. When the
+  bridge stops, it tells the radio it is leaving, and Bluetooth comes back
+  straight away. Without that message, for example after a power cut or with
+  the wires pulled, Bluetooth comes back 15 minutes after the link goes
+  quiet. To change settings from the phone app, run
+  `/etc/init.d/rar-bridge stop`, make the changes, then start the bridge
+  again.
+* **Firmware 2.8.0 and newer keep Bluetooth on (nRF52).** The phone app and
+  the bridge then share one queue of received packets and send
+  confirmations, and each item goes to only one of them. While a phone is
+  connected, the bridge misses some ATAK traffic, and missing confirmations
+  blink the green LED. Use Bluetooth for setup, then disconnect the app. You
+  can also turn Bluetooth off for field use with
+  `meshtastic --set bluetooth.enabled false`.
 
 All radios should run the same Meshtastic firmware release, share the
 channel used for TAK traffic, and use the default LoRa hop limit or set
@@ -122,9 +158,33 @@ PASS: all 10 messages were accepted by the radio. Check that they appear on the 
 ```
 
 Exit code 0 = all accepted, 1 = some not accepted, 2 = no answer from the
-radio (it then prints a checklist: PROTO mode, baud, crossed TX/RX, serial
-console). "Accepted" means the RAK received the message over the UART and
+radio. "Accepted" means the RAK received the message over the UART and
 queued it for LoRa; seeing `1`…`10` on another radio confirms the RF side.
+
+When the radio doesn't answer, `rar-meshtest` shows how much came back from
+it and what that points to. It also lists anything on the Pi that gets in
+the way: a Linux console on the port, or another program with it open.
+
+```
+FAIL: no answer from the radio within 30s.
+  Last error: no config response from radio (0 bytes, 0 API frames received in 20s)
+  Received from the radio: 0 bytes, 0 API frames
+  -> nothing arrived from the radio: check the RAK TXD1 -> Pi pin 10 wire, ...
+```
+
+| Received from the radio | Meaning |
+|-------------------------|---------|
+| 0 bytes | Nothing arrives from the radio. If a phone was dropped from Bluetooth at the same moment (firmware 2.7.x and older), the radio hears the Pi, so only the radio → Pi direction is broken: GPS mode not `NOT_PRESENT`, or the RAK TXD1 → Pi pin 10 wire. Otherwise also check the Serial module settings and the Pi → RAK wire |
+| bytes, 0 API frames | The baud rate doesn't match, the Serial module isn't in PROTO mode, or the radio's GPS driver is also using the pins |
+| API frames, but no handshake | Data is being lost: another program on the Pi is reading the port (a login console, gpsd) |
+
+To test the Pi's side on its own, unplug the radio, connect Pi pin 8
+directly to pin 10 with a jumper wire, and run:
+
+```sh
+/etc/init.d/rar-bridge stop
+rar-meshtest -loopback          # PASS = the Pi's UART works; any fault is on the radio side
+```
 
 ## RGB LED (common cathode)
 

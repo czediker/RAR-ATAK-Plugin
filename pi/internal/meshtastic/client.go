@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -65,6 +66,11 @@ type Status struct {
 	// DeviceHopLimit is the hop limit configured on the device.
 	DeviceHopLimit uint32
 	LastError      string
+	// RxBytes counts every byte received from the radio since the serial
+	// port was last opened, and RxFrames the valid API frames among them.
+	// Together they show whether the radio → Pi direction works at all.
+	RxBytes  uint64
+	RxFrames uint64
 }
 
 // NodeID formats a node number the way Meshtastic displays it.
@@ -82,6 +88,9 @@ type Client struct {
 	conn   io.ReadWriteCloser
 	status Status
 	nonce  uint32
+
+	rxBytes  atomic.Uint64
+	rxFrames atomic.Uint64
 
 	writeMu sync.Mutex
 }
@@ -113,8 +122,11 @@ func (c *Client) Packets() <-chan *meshpb.MeshPacket { return c.rx }
 // Status returns a snapshot of the connection state.
 func (c *Client) Status() Status {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.status
+	st := c.status
+	c.mu.Unlock()
+	st.RxBytes = c.rxBytes.Load()
+	st.RxFrames = c.rxFrames.Load()
+	return st
 }
 
 // Run connects and keeps the connection alive until ctx is cancelled.
@@ -180,16 +192,22 @@ func (c *Client) session(ctx context.Context) error {
 		return fmt.Errorf("open: %w", err)
 	}
 	c.log.Debug("serial port opened; waking radio and requesting config")
-	sctx, cancel := context.WithCancel(ctx)
+	// The port closes when the session ends, which also stops the reader.
+	// sctx is not derived from ctx so that on shutdown the session can still
+	// tell the radio it is leaving before the port closes.
+	sctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
 		<-sctx.Done()
 		conn.Close()
 	}()
 
+	c.rxBytes.Store(0)
+	c.rxFrames.Store(0)
 	c.mu.Lock()
 	c.conn = conn
 	c.status.Connected = false
+	c.status.LastError = ""
 	c.mu.Unlock()
 	defer func() {
 		c.mu.Lock()
@@ -207,7 +225,7 @@ func (c *Client) session(ctx context.Context) error {
 		return fmt.Errorf("wake: %w", err)
 	}
 	select {
-	case <-sctx.Done():
+	case <-ctx.Done():
 		return ctx.Err()
 	case <-time.After(100 * time.Millisecond):
 	}
@@ -215,7 +233,7 @@ func (c *Client) session(ctx context.Context) error {
 	frames := make(chan []byte, 16)
 	readErr := make(chan error, 1)
 	go func() {
-		fr := NewFrameReader(conn)
+		fr := NewFrameReader(countingReader{conn, &c.rxBytes})
 		fr.Noise = func(line string) { c.log.Debug("radio console", "text", line) }
 		for {
 			f, err := fr.Next()
@@ -231,7 +249,14 @@ func (c *Client) session(ctx context.Context) error {
 		}
 	}()
 
-	if err := c.requestConfig(conn); err != nil {
+	// What arrived from the radio since the last config request, to explain
+	// a request that goes unanswered.
+	var baseBytes, baseFrames uint64
+	request := func() error {
+		baseBytes, baseFrames = c.rxBytes.Load(), c.rxFrames.Load()
+		return c.requestConfig(conn)
+	}
+	if err := request(); err != nil {
 		return err
 	}
 	cfgTimer := time.NewTimer(c.cfg.ConfigTimeout)
@@ -241,7 +266,8 @@ func (c *Client) session(ctx context.Context) error {
 
 	for {
 		select {
-		case <-sctx.Done():
+		case <-ctx.Done():
+			c.disconnect(conn)
 			return ctx.Err()
 		case err := <-readErr:
 			return fmt.Errorf("read: %w", err)
@@ -251,16 +277,23 @@ func (c *Client) session(ctx context.Context) error {
 				c.log.Debug("bad frame", "err", err, "len", len(f))
 				continue
 			}
+			c.rxFrames.Add(1)
 			if reconfig {
-				if err := c.requestConfig(conn); err != nil {
+				if err := request(); err != nil {
 					return err
 				}
 				cfgTimer.Reset(c.cfg.ConfigTimeout)
 			}
 		case <-cfgTimer.C:
 			if !c.Status().Connected {
-				c.log.Warn("no config response from radio; check the Serial module is enabled in PROTO mode and the baud rate matches")
-				if err := c.requestConfig(conn); err != nil {
+				rxBytes, rxFrames := c.rxBytes.Load()-baseBytes, c.rxFrames.Load()-baseFrames
+				c.mu.Lock()
+				c.status.LastError = fmt.Sprintf("no config response from radio (%d bytes, %d API frames received in %s)",
+					rxBytes, rxFrames, c.cfg.ConfigTimeout)
+				c.mu.Unlock()
+				c.log.Warn("no config response from radio", "waited", c.cfg.ConfigTimeout,
+					"received_bytes", rxBytes, "api_frames", rxFrames, "hint", LinkHint(rxBytes, rxFrames))
+				if err := request(); err != nil {
 					return err
 				}
 				cfgTimer.Reset(c.cfg.ConfigTimeout)
@@ -357,6 +390,62 @@ func (c *Client) requestConfig(conn io.Writer) error {
 	c.mu.Unlock()
 	c.log.Debug("config handshake requested", "nonce", nonce)
 	return c.send(conn, &meshpb.ToRadio{PayloadVariant: &meshpb.ToRadio_WantConfigId{WantConfigId: nonce}})
+}
+
+// disconnect tells the radio this API client is leaving. The firmware then
+// ends the serial API session at once instead of after its 15-minute
+// timeout; releases up to 2.7 also turn Bluetooth back on, which they keep
+// off while a serial API client is connected. Best effort: gives up after
+// a second so shutdown never hangs.
+func (c *Client) disconnect(conn io.Writer) {
+	done := make(chan error, 1)
+	go func() {
+		err := c.send(conn, &meshpb.ToRadio{PayloadVariant: &meshpb.ToRadio_Disconnect{Disconnect: true}})
+		if d, ok := conn.(interface{ Drain() error }); ok && err == nil {
+			err = d.Drain()
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			c.log.Debug("could not tell the radio this client is disconnecting", "err", err)
+			return
+		}
+		c.log.Debug("told the radio this client is disconnecting")
+	case <-time.After(time.Second):
+		c.log.Debug("timed out telling the radio this client is disconnecting")
+	}
+}
+
+// LinkHint suggests what to check when the radio does not answer the config
+// handshake, from what arrived from it while waiting: rxBytes bytes, of
+// which rxFrames were valid API frames.
+func LinkHint(rxBytes, rxFrames uint64) string {
+	switch {
+	case rxBytes == 0:
+		return "nothing arrived from the radio: check the RAK TXD1 -> Pi pin 10 wire, " +
+			"that the radio's GPS mode is NOT_PRESENT (the RAK4631 GPS uses the same pins 15/16), " +
+			"and that the Serial module is enabled in PROTO mode at this baud rate"
+	case rxFrames == 0:
+		return "data arrives but no Meshtastic API frames: check the Serial module is in PROTO mode, " +
+			"the baud rates match, and the radio's GPS mode is NOT_PRESENT"
+	default:
+		return "API frames arrive but the handshake never completes, so data is being lost: " +
+			"check no other program (a login console, gpsd) reads the serial port"
+	}
+}
+
+// countingReader counts the bytes read through it.
+type countingReader struct {
+	r io.Reader
+	n *atomic.Uint64
+}
+
+func (cr countingReader) Read(p []byte) (int, error) {
+	n, err := cr.r.Read(p)
+	cr.n.Add(uint64(n))
+	return n, err
 }
 
 func (c *Client) send(conn io.Writer, msg *meshpb.ToRadio) error {

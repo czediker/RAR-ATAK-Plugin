@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -65,6 +66,7 @@ type fakeRadio struct {
 	sent    []*meshpb.MeshPacket
 	hbs     int
 	configs int
+	byes    int
 }
 
 func (f *fakeRadio) serve() {
@@ -100,6 +102,10 @@ func (f *fakeRadio) serve() {
 		case *meshpb.ToRadio_Heartbeat:
 			f.mu.Lock()
 			f.hbs++
+			f.mu.Unlock()
+		case *meshpb.ToRadio_Disconnect:
+			f.mu.Lock()
+			f.byes++
 			f.mu.Unlock()
 		}
 	}
@@ -255,5 +261,77 @@ func TestOnFromRadioSeesQueueStatus(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("no QueueStatus seen by OnFromRadio")
+	}
+}
+
+func TestClientTellsRadioWhenShuttingDown(t *testing.T) {
+	c, radios, cancel := newTestClient(t, Config{})
+	radio := <-radios
+	waitFor(t, "handshake", func() bool { return c.Status().Connected })
+	cancel()
+	waitFor(t, "disconnect at radio", func() bool { radio.mu.Lock(); defer radio.mu.Unlock(); return radio.byes == 1 })
+}
+
+func TestClientCountsWhatArrives(t *testing.T) {
+	c, radios, cancel := newTestClient(t, Config{})
+	defer cancel()
+	<-radios
+	waitFor(t, "handshake", func() bool { return c.Status().Connected })
+	// MyInfo, Config and ConfigCompleteId.
+	if st := c.Status(); st.RxFrames != 3 || st.RxBytes < 3*4 {
+		t.Errorf("rx bytes/frames = %d/%d", st.RxBytes, st.RxFrames)
+	}
+}
+
+// syncBuffer is a goroutine-safe log sink.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+// A radio that hears the Pi but whose replies never arrive (the RAK's TX
+// line is dead): the warning must say nothing at all came back.
+func TestClientExplainsSilentRadio(t *testing.T) {
+	var logs syncBuffer
+	open := func() (io.ReadWriteCloser, error) {
+		a, b := net.Pipe()
+		go io.Copy(io.Discard, b)
+		return a, nil
+	}
+	c := New(Config{ConfigTimeout: 30 * time.Millisecond, Logger: slog.New(slog.NewTextHandler(&logs, nil))}, open)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+	waitFor(t, "warning", func() bool { return strings.Contains(logs.String(), "no config response") })
+	out := logs.String()
+	for _, want := range []string{"received_bytes=0", "api_frames=0", "nothing arrived from the radio", "NOT_PRESENT"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("warning lacks %q:\n%s", want, out)
+		}
+	}
+	if st := c.Status(); st.Connected || st.RxBytes != 0 || !strings.HasPrefix(st.LastError, "no config response from radio (0 bytes") {
+		t.Errorf("status = %+v", st)
+	}
+}
+
+func TestLinkHint(t *testing.T) {
+	silent, garbage, lossy := LinkHint(0, 0), LinkHint(500, 0), LinkHint(500, 2)
+	if silent == garbage || garbage == lossy || silent == lossy {
+		t.Fatal("hints are not distinct")
+	}
+	if !strings.Contains(silent, "pin 10") || !strings.Contains(garbage, "PROTO") || !strings.Contains(lossy, "other program") {
+		t.Errorf("hints:\n%s\n%s\n%s", silent, garbage, lossy)
 	}
 }

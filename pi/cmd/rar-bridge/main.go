@@ -20,6 +20,7 @@ import (
 	"github.com/czediker/rar-atak-plugin/pi/internal/meshpb"
 	"github.com/czediker/rar-atak-plugin/pi/internal/meshtastic"
 	"github.com/czediker/rar-atak-plugin/pi/internal/state"
+	"github.com/czediker/rar-atak-plugin/pi/internal/uartcheck"
 )
 
 var version = "dev"
@@ -89,6 +90,10 @@ func main() {
 		log.Warn("HaLow interface not configured; counting batman-adv neighbors on every interface")
 	}
 
+	for _, p := range uartcheck.Check(*serialDev) {
+		log.Warn("serial port problem: "+p, "serial", *serialDev)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -108,7 +113,11 @@ func main() {
 			}
 		},
 	}, meshtastic.SerialOpener(*serialDev, *baud))
-	go radio.Run(ctx)
+	radioDone := make(chan struct{})
+	go func() {
+		radio.Run(ctx)
+		close(radioDone)
+	}()
 
 	reports := make(chan halow.Report, 1)
 	mon := &halow.Monitor{
@@ -167,6 +176,12 @@ func main() {
 		StatePath: *statePath,
 		LeaseFile: *leaseFile,
 	})
+	// Let the client tell the radio it is leaving, so the radio ends the
+	// serial session (and turns Bluetooth back on) straight away.
+	select {
+	case <-radioDone:
+	case <-time.After(2 * time.Second):
+	}
 	log.Info("rar-bridge stopped")
 }
 

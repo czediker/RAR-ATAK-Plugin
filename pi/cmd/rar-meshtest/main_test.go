@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -21,10 +23,16 @@ type fakeRadio struct {
 	sendErr   map[int]error
 	sent      []string
 	ports     []meshpb.PortNum
+	lastErr   string
+	rxBytes   uint64
 }
 
 func (f *fakeRadio) Status() meshtastic.Status {
-	return meshtastic.Status{Connected: f.connected, NodeNum: 0xa1b2c3d4, DeviceHopLimit: 3, LastError: "open /dev/ttyAMA0: no such file or directory"}
+	lastErr := f.lastErr
+	if lastErr == "" {
+		lastErr = "open: open /dev/ttyAMA0: no such file or directory"
+	}
+	return meshtastic.Status{Connected: f.connected, NodeNum: 0xa1b2c3d4, DeviceHopLimit: 3, LastError: lastErr, RxBytes: f.rxBytes}
 }
 
 func (f *fakeRadio) SendData(port meshpb.PortNum, payload []byte) (uint32, error) {
@@ -114,6 +122,29 @@ func TestNoAnswerFromRadio(t *testing.T) {
 	if len(r.sent) != 0 {
 		t.Error("nothing should be sent without a connection")
 	}
+	if strings.Contains(o, "Received from the radio") {
+		t.Errorf("link hint shown although the port never opened:\n%s", o)
+	}
+}
+
+// The port opened and the radio heard nothing back: say which direction
+// failed and list what is wrong on the Pi.
+func TestSilentRadioDiagnosis(t *testing.T) {
+	r, info := newFake()
+	r.connected = false
+	r.lastErr = "no config response from radio (0 bytes, 0 API frames received in 20s)"
+	opt := fastOptions()
+	opt.PortProblems = func() []string { return []string{"process 812 (getty) has /dev/ttyAMA0 open"} }
+	var out strings.Builder
+	if code := run(context.Background(), r, info, opt, &out); code != 2 {
+		t.Fatalf("exit %d", code)
+	}
+	o := out.String()
+	for _, s := range []string{"Received from the radio: 0 bytes, 0 API frames", "nothing arrived from the radio", "- process 812 (getty)", "GPS mode is NOT_PRESENT", "-loopback"} {
+		if !strings.Contains(o, s) {
+			t.Errorf("output missing %q:\n%s", s, o)
+		}
+	}
 }
 
 func TestInterrupted(t *testing.T) {
@@ -128,5 +159,53 @@ func TestInterrupted(t *testing.T) {
 	}
 	if len(r.sent) > 2 {
 		t.Errorf("kept sending after interrupt: %d", len(r.sent))
+	}
+}
+
+// pipePort is a fake serial port: what is written goes through xform and
+// can then be read back (xform nil = nothing comes back).
+type pipePort struct {
+	r     *io.PipeReader
+	w     *io.PipeWriter
+	xform func([]byte) []byte
+}
+
+func newPipePort(xform func([]byte) []byte) *pipePort {
+	r, w := io.Pipe()
+	return &pipePort{r: r, w: w, xform: xform}
+}
+
+func (p *pipePort) Read(b []byte) (int, error) { return p.r.Read(b) }
+
+func (p *pipePort) Write(b []byte) (int, error) {
+	if p.xform != nil {
+		go p.w.Write(p.xform(append([]byte(nil), b...)))
+	}
+	return len(b), nil
+}
+
+func (p *pipePort) Close() error {
+	p.w.CloseWithError(io.ErrClosedPipe)
+	return p.r.Close()
+}
+
+func TestLoopback(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		xform func([]byte) []byte
+		code  int
+		want  string
+	}{
+		{"jumpered", func(b []byte) []byte { return b }, 0, "PASS"},
+		{"nothing back", nil, 1, "nothing came back"},
+		{"console echo", func(b []byte) []byte { return append([]byte("OpenWrt login: "), bytes.ToUpper(b[:10])...) }, 1, "not what was sent"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out strings.Builder
+			code := loopback(newPipePort(tc.xform), 100*time.Millisecond, []string{"console=serial0,115200 found"}, &out)
+			if code != tc.code || !strings.Contains(out.String(), tc.want) || !strings.Contains(out.String(), "console=serial0") {
+				t.Errorf("exit %d, output:\n%s", code, out.String())
+			}
+		})
 	}
 }

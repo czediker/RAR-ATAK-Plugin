@@ -4,8 +4,9 @@
 
 1. Flash the current openMANET image for the Pi 4 + WM6108 (SPI) and run its
    setup wizard.
-2. Configure the RAK4631 Serial module for PROTO mode and wire the UART —
-   see [hardware.md](hardware.md#rak4631--pi-uart).
+2. Configure the RAK4631 Serial module for PROTO mode, set its GPS mode to
+   `NOT_PRESENT` (the GPS uses the same pins), and wire the UART. See
+   [hardware.md](hardware.md#rak4631--pi-uart).
 3. Free the Pi UART (`enable_uart=1`, `dtoverlay=disable-bt`, no serial
    console) and optionally add the LED `gpio=` line — see
    [hardware.md](hardware.md#pi-4-put-the-full-uart-on-pins-810). Reboot.
@@ -193,7 +194,9 @@ Pi; whether ATAK showed it is visible on the phone.
 
 | Symptom | Check |
 |---------|-------|
-| `no config response from radio` in the log | Serial module not in PROTO mode, wrong baud, RX/TX swapped, or a console still on `ttyAMA0` |
+| `no config response from radio` in the log | Read `received_bytes` and `hint` in the same line. `received_bytes=0` means nothing comes back from the radio: set the RAK's GPS mode to `NOT_PRESENT` and check the RAK TXD1 → Pi pin 10 wire. Otherwise: Serial module not in PROTO mode, wrong baud, RX/TX swapped, or a console still on `ttyAMA0`. See [the UART link test](hardware.md#uart-link-test-rar-meshtest) |
+| `serial port problem: …` at startup | A Linux console is on the radio's UART, or another program has it open (named in the line) |
+| A phone connected to the radio over Bluetooth drops when the UART is connected | Expected with Meshtastic firmware 2.7.x and older: the radio turns Bluetooth off while the bridge is connected. It also shows that the Pi → radio direction works. Stop `rar-bridge` to use the phone app — see [Bluetooth while the bridge is connected](hardware.md#bluetooth-while-the-bridge-is-connected) |
 | LED always green with neighbors present | `halow_iface` wrong; run `batctl meshif bat0 neighbors_json` and compare `hard_ifname` |
 | Remote users never appear | Radios on different Meshtastic channels/keys; with `global.debug=1` every received packet is logged (undecryptable ones too) |
 | Received traffic not shown in ATAK | ATAK lacks a UDP 4242 input; plugin not loaded yet (the bridge learns the phone from plugin traffic or DHCP leases) |

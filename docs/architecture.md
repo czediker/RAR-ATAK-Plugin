@@ -156,7 +156,8 @@ or the LED service.
 | `cmd/rar-led` | LED loop |
 | `internal/bridge` | Forwarding policy, queues, rate limiting, event loop, UDP I/O |
 | `internal/halow` | batctl neighbor parsing, hysteresis, monitor loop |
-| `internal/meshtastic` | Stream API framing and client (handshake, heartbeat, reconnect) |
+| `internal/meshtastic` | Stream API framing and client (handshake, heartbeat, reconnect, link diagnosis, disconnect on shutdown) |
+| `internal/uartcheck` | Finds a Linux console or another program on the radio's serial port |
 | `internal/takconv` | CoT ⇄ TAKPacket conversion |
 | `internal/cot` | CoT XML parsing/building |
 | `internal/halowseen` | ATAK multicast listener / reachable-over-HaLow tracker |
