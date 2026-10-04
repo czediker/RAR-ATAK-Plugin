@@ -7,7 +7,7 @@
 #                                     (sections added in new releases are filled in)
 #   sh rar-install.sh --reset-config  replace /etc/config/rar with the release
 #                                     defaults, keeping this radio's own settings
-#                                     (HaLow interface, serial port, baud, ...)
+#                                     (HaLow interface, baud, channel, ...)
 #
 # An existing /etc/config/rar is always backed up to /etc/config/rar.bak.
 set -eu
@@ -19,8 +19,10 @@ CONF=$CONF_DIR/rar
 UCI="uci -c $CONF_DIR"
 
 # Settings that describe this radio rather than the software release;
-# --reset-config carries them over from the old file.
-KEEP="bridge.halow_iface bridge.mesh_iface bridge.serial_device bridge.baud bridge.channel bridge.hop_limit bridge.mcast_iface global.debug"
+# --reset-config carries them over from the old file. The serial device is
+# not one of them: it follows the hardware design (the RAK4631 on uart2), so
+# a reset restores the release default.
+KEEP="bridge.halow_iface bridge.mesh_iface bridge.baud bridge.channel bridge.hop_limit bridge.mcast_iface global.debug"
 
 RESET=0
 for a in "$@"; do
@@ -36,6 +38,16 @@ for a in "$@"; do
 		;;
 	esac
 done
+
+# release_default <section.option>: the value in the release defaults.
+release_default() {
+	local d v
+	d=$(mktemp -d)
+	cp "$CONF_DIR/rar.default" "$d/rar"
+	v=$($UCI -q -c "$d" get "rar.$1" || true)
+	rm -rf "$d"
+	echo "$v"
+}
 
 service() { # <name> <action>
 	[ -n "${RAR_NO_SERVICES:-}" ] && return 0
@@ -84,6 +96,11 @@ elif [ "$RESET" = 1 ]; then
 			echo "  kept $k=$v"
 		fi
 	done
+	was=$($UCI -q -c "$old" get rar.bridge.serial_device || true)
+	dev=$($UCI -q get rar.bridge.serial_device || true)
+	if [ -n "$was" ] && [ "$was" != "$dev" ]; then
+		echo "  reset bridge.serial_device=$dev (was $was)"
+	fi
 	rm -rf "$old"
 else
 	echo "Keeping $CONF (backup: $CONF.bak)"
@@ -92,6 +109,12 @@ else
 		$UCI set rar.global=global
 		$UCI set rar.global.debug=0
 		echo "  added rar.global.debug=0"
+	fi
+	dev=$($UCI -q get rar.bridge.serial_device || true)
+	def=$(release_default bridge.serial_device)
+	if [ -n "$def" ] && [ "$dev" != "$def" ]; then
+		echo "  NOTE: rar.bridge.serial_device=$dev, the release default is $def. To use it:"
+		echo "        uci set rar.bridge.serial_device='$def'; uci commit rar"
 	fi
 	if [ "$($UCI -q get rar.led.active_low || true)" = 1 ]; then
 		echo "  NOTE: rar.led.active_low=1 (common-anode LED). For a common-cathode LED:"

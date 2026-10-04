@@ -16,7 +16,8 @@
 
 .PARAMETER ResetConfig
   Replace /etc/config/rar with the new defaults, keeping this radio's own
-  settings (HaLow interface, serial port, baud, channel, hop limit, debug).
+  settings (HaLow interface, baud, channel, hop limit, debug). The serial
+  device returns to the release default (/dev/ttyAMA2, uart2).
   The old file is saved as /etc/config/rar.bak.
 
 .PARAMETER User

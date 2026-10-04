@@ -6,7 +6,8 @@
 #                           install/upgrade on a radio, keeping its /etc/config/rar
 #   make install HOST=root@10.41.113.1 RESET=1
 #                           same, but reset /etc/config/rar to the release defaults
-#                           (keeps the radio's HaLow interface, serial port, baud, ...)
+#                           (keeps the radio's HaLow interface, baud, channel, ...;
+#                           the serial device returns to the default, /dev/ttyAMA2)
 #
 # On Windows without make, use scripts/install.ps1 instead.
 

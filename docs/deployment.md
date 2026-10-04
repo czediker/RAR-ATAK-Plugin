@@ -46,12 +46,13 @@ use an SSH key.
 `/etc/config/rar` is backed up to `/etc/config/rar.bak` on every install.
 
 * Plain install/upgrade keeps your settings and only adds sections that are
-  new in the release (e.g. `global.debug`).
+  new in the release (e.g. `global.debug`). It prints a note if
+  `serial_device` differs from the release default (`/dev/ttyAMA2`).
 * **Reset to the new defaults** with `-ResetConfig` (Windows) or `RESET=1`
   (make). This radio's own settings are carried over: `halow_iface`,
-  `mesh_iface`, `serial_device`, `baud`, `channel`, `hop_limit`,
-  `mcast_iface` and `global.debug`. Everything else, including the LED
-  polarity, takes the release default.
+  `mesh_iface`, `baud`, `channel`, `hop_limit`, `mcast_iface` and
+  `global.debug`. Everything else takes the release default, including the
+  LED polarity and `serial_device` (`/dev/ttyAMA2`, uart2).
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Radio 10.41.x.1 -ResetConfig
