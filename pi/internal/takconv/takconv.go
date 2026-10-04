@@ -144,10 +144,23 @@ func Decode(payload []byte) (*meshpb.TAKPacket, error) {
 	return &pkt, nil
 }
 
-// SenderUID returns the ATAK UID of the packet's sender.
+// SenderUID returns the ATAK UID of the packet's sender. The Meshtastic ATAK
+// plugin appends "|<messageId>" to it on chat messages, to carry ATAK's
+// message ID for read receipts; that suffix is not part of the UID.
 func SenderUID(pkt *meshpb.TAKPacket) string {
-	return pkt.GetContact().GetDeviceCallsign()
+	uid, _, _ := strings.Cut(pkt.GetContact().GetDeviceCallsign(), msgIDSeparator)
+	return uid
 }
+
+// SenderMessageID returns the ATAK message ID the Meshtastic ATAK plugin
+// appends to the sender UID ("uid|messageId"), or "".
+func SenderMessageID(pkt *meshpb.TAKPacket) string {
+	_, id, _ := strings.Cut(pkt.GetContact().GetDeviceCallsign(), msgIDSeparator)
+	return strings.TrimSpace(id)
+}
+
+// msgIDSeparator splits "uid|messageId" in Contact.device_callsign.
+const msgIDSeparator = "|"
 
 // Position is a sender location used to place chat events.
 type Position struct {
@@ -207,8 +220,14 @@ func ToCoT(pkt *meshpb.TAKPacket, opts CoTOptions) ([]byte, error) {
 		if chat.GetReceiptType() != meshpb.GeoChat_ReceiptType_None {
 			return nil, ErrUnsupported
 		}
+		// Keep the sender's own message ID when the Meshtastic ATAK plugin
+		// sent it, so ATAK sees the same message everywhere.
+		msgID := SenderMessageID(pkt)
+		if msgID == "" {
+			msgID = MessageID(opts.FromNode, opts.PacketID, uid, chat.GetMessage())
+		}
 		c := cot.GeoChat{
-			MessageID:      MessageID(opts.FromNode, opts.PacketID, uid, chat.GetMessage()),
+			MessageID:      msgID,
 			SenderUID:      uid,
 			SenderCallsign: callsign,
 			ToUID:          chat.GetTo(),

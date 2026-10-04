@@ -249,3 +249,39 @@ func TestDecodeGarbage(t *testing.T) {
 		t.Errorf("compressed decode: %v %v", pkt, err)
 	}
 }
+
+// The Meshtastic ATAK plugin sends chat with Contact.device_callsign set to
+// "uid|messageId". The UID must come out clean and the message ID reused.
+func TestChatFromMeshtasticPluginSplitsMessageID(t *testing.T) {
+	to := cot.AllChatRooms
+	pkt := &meshpb.TAKPacket{
+		Contact:        &meshpb.Contact{Callsign: "BRAVO", DeviceCallsign: "ANDROID-bravo|7f3c2a10-1111-4222-8333-944455556666"},
+		PayloadVariant: &meshpb.TAKPacket_Chat{Chat: &meshpb.GeoChat{Message: "hello", To: &to}},
+	}
+	if got := SenderUID(pkt); got != "ANDROID-bravo" {
+		t.Errorf("SenderUID = %q", got)
+	}
+	if got := SenderMessageID(pkt); got != "7f3c2a10-1111-4222-8333-944455556666" {
+		t.Errorf("SenderMessageID = %q", got)
+	}
+	x, err := ToCoT(pkt, CoTOptions{Now: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC), ChatStale: time.Hour, FromNode: 1, PacketID: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev, err := cot.Parse(x)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Chat.SenderUID != "ANDROID-bravo" || ev.Chat.MessageID != "7f3c2a10-1111-4222-8333-944455556666" {
+		t.Errorf("chat = %+v", ev.Chat)
+	}
+	if want := "GeoChat.ANDROID-bravo.All Chat Rooms.7f3c2a10-1111-4222-8333-944455556666"; ev.UID != want {
+		t.Errorf("event uid = %q, want %q", ev.UID, want)
+	}
+
+	// Without a suffix the UID is unchanged and the message ID derived.
+	pkt.Contact.DeviceCallsign = "ANDROID-bravo"
+	if SenderUID(pkt) != "ANDROID-bravo" || SenderMessageID(pkt) != "" {
+		t.Errorf("plain uid: %q %q", SenderUID(pkt), SenderMessageID(pkt))
+	}
+}

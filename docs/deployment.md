@@ -4,8 +4,9 @@
 
 1. Flash the current openMANET image for the Pi 4 + WM6108 (SPI) and run its
    setup wizard.
-2. Configure the RAK4631's Serial module for PROTO mode with GPS mode
-   `NOT_PRESENT`, and connect it to **uart2 on Pi pins 27/28**: the WM1302
+2. Configure the RAK4631's Serial module for PROTO mode, with GPS mode
+   `NOT_PRESENT` and device role **TAK** (like the other ATAK radios), and
+   connect it to **uart2 on Pi pins 27/28**: the WM1302
    HAT's own GPS occupies the primary UART (pins 8/10). This means checking
    that the pins are free, adding `dtoverlay=uart2` to `config.txt`, and a
    loopback test. See
@@ -183,7 +184,8 @@ What is logged:
 |-------|----------|
 | Plugin traffic on 6700/6701 | `UDP datagram from plugin`, `plugin message received` (size, ATAK UID, callsign, type, position, team, role, battery, speed/course, or chat recipient and text size — never the text itself), `not sent to Meshtastic: …`, `converted to TAKPacket` (size), `position queued` / `chat queued` (incl. rate limit wait), `newer position replaces an unsent queued one` |
 | Hand-off to Meshtastic | `passed to Meshtastic radio` / `FAILED to pass message to Meshtastic radio`, then `Meshtastic radio accepted …` / `REJECTED …` / `did not confirm …` |
-| Received from Meshtastic | `ATAK data received from Meshtastic` (node, packet ID, RSSI, SNR, hops, size, ATAK UID/metadata), `sent to ATAK` (ip:port) / `FAILED to send to ATAK`, non-ATAK packets (`not ATAK traffic; ignored`, with port and size) |
+| Received from Meshtastic | `ATAK data received from Meshtastic` (node, packet ID, RSSI, SNR, hops, size, ATAK UID/metadata), `sent to ATAK` (ip:port) / `FAILED to send to ATAK`, non-ATAK packets (`not ATAK traffic; ignored`, with port and size), `compressed TAKPacket held back` (waiting for the radio's decompressed copy) |
+| Clock | `this radio's clock differs from the EUD's` / `now matches the EUD's` (offset, both times) |
 | De-duplication | `DUPLICATE Meshtastic packet`, `DEDUPE: sender is reachable over HaLow …`, `TAKPacket is from this radio's own EUD`, `ATAK user heard over HaLow …`, `direct message for another user` |
 | State | `state.json change committed` (field-by-field diff), `HaLow link state committed`, `HaLow neighbor set changed`, fallover countdown / cancel, `openMANET neighbor query failed`, multicast listener errors |
 | Radio | serial port opened, config handshake, firmware/preset/channels, heartbeat, radio ready / not available, radio console and log lines |
@@ -200,6 +202,9 @@ Pi; whether ATAK showed it is visible on the phone.
 | `serial port problem: process … (gpsd) has /dev/ttyAMA0 open` | The WM1302 HAT's GPS is wired to the primary UART (pins 8/10), and openMANET's gpsd reads it. Move the RAK4631 to uart2 on pins 27/28 — see [Connecting the RAK4631](hardware.md#connecting-the-rak4631-uart2-pins-2728) |
 | `no config response from radio` in the log | Read `received_bytes` and `hint` in the same line. `received_bytes=0` means nothing comes back from the radio: check nothing else is wired to the Pi's RX pin (the WM1302 HAT's GPS is on pin 10), set the RAK's GPS mode to `NOT_PRESENT`, and check the RAK TXD1 → Pi RX wire (pin 28 for uart2). Otherwise: Serial module not in PROTO mode, wrong baud, RX/TX swapped, or a console still on `ttyAMA0`. See [the UART link test](hardware.md#uart-link-test-rar-meshtest) |
 | `serial port was hung up` (older versions: `read: Port has been closed`), repeating | Another program or a login console is using the radio's port; the `serial port problem` lines name it. A login console on the UART: remove the serial console and confirm with `cat /proc/cmdline` after a reboot, see [the console section](hardware.md#pi-4-put-the-full-uart-on-pins-810). gpsd: see the row above |
+| `received compressed ATAK data the radio did not decompress` | The RAK's device role isn't TAK, so on firmware 2.7.x it doesn't decompress ATAK data from radios that are. Set it: `meshtastic --set device.role TAK` (stop `rar-bridge` first if you use the phone app) |
+| `this radio's clock differs from the EUD's` | The Pi's clock is wrong (no battery-backed clock, and no time server without internet). The bridge stamps everything it hands ATAK with the EUD's time, learned from the plugin's own traffic, so chat lands in the right place and positions don't show as stale. Fixing the Pi's time only matters for log timestamps |
+| Chat from other users appears far up the chat history | Older version: chats were stamped with the Pi's clock. Update; the bridge now uses the EUD's clock (see the row above) |
 | `serial port problem: …` | A Linux console or login is on the radio's UART, or another program has it open (named in the line). Logged at startup and while the radio is disconnected |
 | A phone connected to the radio over Bluetooth drops when the bridge connects | Expected with Meshtastic firmware 2.7.x and older: the radio turns Bluetooth off while the bridge is connected. It also shows that the Pi → radio direction works. Stop `rar-bridge` to use the phone app — see [Bluetooth while the bridge is connected](hardware.md#bluetooth-while-the-bridge-is-connected) |
 | LED always green with neighbors present | `halow_iface` wrong; run `batctl meshif bat0 neighbors_json` and compare `hard_ifname` |

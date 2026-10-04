@@ -48,9 +48,18 @@ The serial link uses the standard Meshtastic stream API framing:
   altitude is 0, `contact`, `uid@Droid`, `__group`, `status`, `track`.
 * Chat: GeoChat `b-t-f` in ATAK's own layout (`__chat`, `chatgrp`, `link`,
   `remarks`), UID `GeoChat.<sender>.<room>.<messageId>`, stale 24 h,
-  placed at the sender's last known position. `messageId` is a UUID
-  derived from (sender node, packet ID, sender UID, text).
+  placed at the sender's last known position. `messageId` is the
+  sender's own: the Meshtastic ATAK plugin sends chat with
+  `contact.device_callsign` = `<uid>|<messageId>`, which is split into the
+  sender UID and the message ID. Without a suffix, it is a UUID derived from
+  (sender node, packet ID, sender UID, text).
+* `time`, `start` and `stale` use the **EUD's clock**. The bridge estimates
+  it from the timestamps on the plugin's own CoT, because the Pi's clock is
+  often wrong, and ATAK orders chat and judges staleness by these times.
 * Both carry `<__rar via="meshtastic" node="!xxxxxxxx"/>` in `detail`.
+* Compressed TAKPackets (`is_compressed`, unishox2, firmware ≤ 2.7) are
+  never decoded by the bridge. A RAK with device role TAK hands it a
+  decompressed copy with the same packet ID. Otherwise the bridge warns.
 
 Receipts (`receipt_type != None`) and generic `detail` payloads are ignored.
 

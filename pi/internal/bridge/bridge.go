@@ -181,6 +181,15 @@ type Bridge struct {
 	rxSeen     map[rxKey]time.Time
 	targets    []netip.Addr
 
+	// clock follows the EUD's clock; CoT delivered to ATAK carries its time.
+	clock      eudClock
+	skewLogged time.Duration
+	// compressed holds compressed TAKPackets waiting for the radio's
+	// decompressed copy; undecompressed counts those that never got one.
+	compressed       map[rxKey]time.Time
+	undecompressed   int
+	compressedWarnAt time.Time
+
 	txCount, rxCount uint64
 	lastTxAt         time.Time
 	lastRxAt         time.Time
@@ -194,12 +203,13 @@ func New(cfg Config, radio Radio, deliver Deliverer, euds *eud.Registry, seen *h
 	return &Bridge{
 		cfg: cfg, log: log.With("component", "bridge"),
 		radio: radio, deliver: deliver, euds: euds, seen: seen,
-		plis:      map[string]*queuedPLI{},
-		lastPLI:   map[string]sentPLI{},
-		inFlight:  map[uint32]inFlight{},
-		senders:   map[string]takconv.Sender{},
-		positions: map[string]position{},
-		rxSeen:    map[rxKey]time.Time{},
+		plis:       map[string]*queuedPLI{},
+		lastPLI:    map[string]sentPLI{},
+		inFlight:   map[uint32]inFlight{},
+		senders:    map[string]takconv.Sender{},
+		positions:  map[string]position{},
+		rxSeen:     map[rxKey]time.Time{},
+		compressed: map[rxKey]time.Time{},
 	}
 }
 
@@ -233,6 +243,8 @@ func (b *Bridge) HandleEUD(port Port, src netip.Addr, data []byte, now time.Time
 	if ev.IsChat() {
 		uid = ev.Chat.SenderUID
 	}
+	b.clock.observe(ev.Time, now)
+	b.noteClockSkew(now)
 	if newAddr, newUID := b.euds.Learn(src, uid, now); newAddr || newUID {
 		b.log.Info("local EUD learned from plugin traffic", "addr", src, "uid", uid, "new_addr", newAddr, "new_uid", newUID)
 	}
@@ -310,6 +322,7 @@ func (b *Bridge) encode(ev *cot.Event, sender *takconv.Sender) ([]byte, error) {
 func (b *Bridge) Tick(now time.Time) {
 	b.expire(now)
 	b.checkAcks(now)
+	b.checkCompressed(now)
 	b.logTargets(now)
 
 	st := b.radio.Status()
@@ -494,12 +507,17 @@ func (b *Bridge) HandleRadio(p *meshpb.MeshPacket, now time.Time) {
 	}
 	b.log.Debug("ATAK data received from Meshtastic", append(attrs, packetAttrs(pkt)...)...)
 	if pkt.GetIsCompressed() {
-		// Older firmware/plugins compress strings with unishox2. Firmware
-		// that does this also hands clients a decompressed copy with the
-		// same packet ID, so skip without marking the ID as seen.
-		b.log.Debug("compressed TAKPacket skipped; waiting for the radio's uncompressed copy", "from", meshtastic.NodeID(p.GetFrom()), "packet_id", p.GetId())
+		// Firmware up to 2.7 compresses TAKPacket strings (unishox2) on
+		// radios whose role is TAK. Such a radio also hands its clients a
+		// decompressed copy with the same packet ID, so wait for that;
+		// checkCompressed warns if it never comes (role not TAK).
+		if _, ok := b.compressed[key]; !ok {
+			b.compressed[key] = now
+		}
+		b.log.Debug("compressed TAKPacket held back; waiting for the radio's decompressed copy", "from", meshtastic.NodeID(p.GetFrom()), "packet_id", p.GetId())
 		return
 	}
+	delete(b.compressed, key)
 	b.rxSeen[key] = now
 
 	uid := takconv.SenderUID(pkt)
@@ -536,7 +554,7 @@ func (b *Bridge) HandleRadio(p *meshpb.MeshPacket, now time.Time) {
 	}
 
 	x, err := takconv.ToCoT(pkt, takconv.CoTOptions{
-		Now:       now,
+		Now:       b.clock.now(now), // ATAK orders chat and judges staleness by this
 		PLIStale:  b.cfg.PLIStale,
 		ChatStale: b.cfg.ChatStale,
 		Via:       cot.Via{Transport: "meshtastic", Node: meshtastic.NodeID(p.GetFrom())},
@@ -568,6 +586,62 @@ func (b *Bridge) HandleRadio(p *meshpb.MeshPacket, now time.Time) {
 		b.log.Debug("sent to ATAK", "kind", kind, "uid", uid, "dest", dest, "cot_bytes", len(x))
 	}
 	b.log.Info("received over Meshtastic and sent to ATAK", "kind", kind, "callsign", pkt.GetContact().GetCallsign(), "uid", uid, "from", meshtastic.NodeID(p.GetFrom()), "euds", delivered, "of", len(targets))
+}
+
+const (
+	// compressedWait is how long a compressed TAKPacket waits for the
+	// radio's decompressed copy.
+	compressedWait = 3 * time.Second
+	// compressedWarnEvery limits the warning about undecompressed packets.
+	compressedWarnEvery = 5 * time.Minute
+	// clockSkewReport is how far the EUD's and this host's clocks may be
+	// apart (or the gap change) before it is logged.
+	clockSkewReport = 30 * time.Second
+)
+
+// checkCompressed reports compressed TAKPackets the radio never decompressed:
+// this bridge cannot read them, and the radio only decompresses when its
+// device role is TAK.
+func (b *Bridge) checkCompressed(now time.Time) {
+	n := 0
+	for k, at := range b.compressed {
+		if now.Sub(at) >= compressedWait {
+			delete(b.compressed, k)
+			n++
+		}
+	}
+	if n == 0 {
+		return
+	}
+	b.undecompressed += n
+	b.meshFault(now, "compressed ATAK data not decompressed by the radio: set its device role to TAK")
+	if !b.compressedWarnAt.IsZero() && now.Sub(b.compressedWarnAt) < compressedWarnEvery {
+		return
+	}
+	b.compressedWarnAt = now
+	b.log.Warn("received compressed ATAK data the radio did not decompress, so it cannot be delivered; "+
+		"set the radio's device role to TAK (meshtastic --set device.role TAK)", "packets", b.undecompressed)
+	b.undecompressed = 0
+}
+
+// noteClockSkew logs when this host's clock and the EUD's are far apart, or
+// the gap changes: CoT delivered to ATAK is stamped with the EUD's time.
+func (b *Bridge) noteClockSkew(now time.Time) {
+	off, ok := b.clock.offset(now)
+	if !ok {
+		return
+	}
+	if d := off - b.skewLogged; d > -clockSkewReport && d < clockSkewReport {
+		return
+	}
+	b.skewLogged = off
+	if off > -clockSkewReport && off < clockSkewReport {
+		b.log.Info("this radio's clock now matches the EUD's", "eud_ahead_by", off.Round(time.Second))
+		return
+	}
+	b.log.Warn("this radio's clock differs from the EUD's; traffic delivered to ATAK is stamped with the EUD's time",
+		"eud_ahead_by", off.Round(time.Second),
+		"radio_time", now.UTC().Format(time.RFC3339), "eud_time", now.Add(off).UTC().Format(time.RFC3339))
 }
 
 // Snapshot returns the status for the LED service.

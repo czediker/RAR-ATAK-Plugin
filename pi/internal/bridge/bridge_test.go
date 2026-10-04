@@ -459,3 +459,83 @@ func TestDebugTrail(t *testing.T) {
 		t.Errorf("message text logged:\n%s", h.logs.String())
 	}
 }
+
+// The Pi's clock is often wrong (no RTC, no internet). CoT delivered to ATAK
+// must carry the EUD's time, learned from the plugin's own traffic: ATAK
+// orders chat and judges staleness by it.
+func TestDeliveriesUseEUDClock(t *testing.T) {
+	h := newHarness(halow.LinkConnected)
+	ahead := 3 * time.Hour
+	eudPLI := cot.BuildPLI(cot.PLI{UID: selfUID, Callsign: "ALPHA", Lat: 1, Lon: 2, HAE: 10, Battery: -1, Speed: math.NaN(), Course: math.NaN(), Time: t0.Add(ahead), Stale: time.Minute})
+	h.b.HandleEUD(PortAuto, phone, eudPLI, at(0))
+	h.requireLog(t, "clock differs from the EUD's", "eud_ahead_by=3h0m0s")
+
+	h.b.HandleRadio(radioPacket(0x1111, 1, remotePLI("ANDROID-bravo")), at(5))
+	h.b.HandleRadio(radioPacket(0x1111, 2, remoteChat("ANDROID-bravo", cot.AllChatRooms, "hi")), at(6))
+	if len(h.out.got) != 2 {
+		t.Fatalf("deliveries = %d", len(h.out.got))
+	}
+	if got, want := h.out.got[0].ev.Time, at(5).Add(ahead); !got.Equal(want) {
+		t.Errorf("pli time = %v, want %v", got, want)
+	}
+	if got, want := h.out.got[1].ev.Time, at(6).Add(ahead); !got.Equal(want) {
+		t.Errorf("chat time = %v, want %v", got, want)
+	}
+	if !h.out.got[0].ev.Stale.After(at(6).Add(ahead)) {
+		t.Errorf("pli already stale on the EUD's clock: %v", h.out.got[0].ev.Stale)
+	}
+}
+
+// Chat from the Meshtastic ATAK plugin carries "uid|messageId" as its sender.
+func TestReceiveChatFromMeshtasticPlugin(t *testing.T) {
+	h := newHarness(halow.LinkConnected)
+	h.b.HandleEUD(PortAuto, phone, pli(1, 2), at(0))
+	h.b.HandleRadio(radioPacket(0x2222, 1, remotePLI("ANDROID-bravo")), at(1))
+	h.b.HandleRadio(radioPacket(0x2222, 2, remoteChat("ANDROID-bravo|0d1e2f30-aaaa-4bbb-8ccc-dddddddddddd", cot.AllChatRooms, "from stock")), at(2))
+	if len(h.out.got) != 2 {
+		t.Fatalf("deliveries = %d", len(h.out.got))
+	}
+	c := h.out.got[1].ev
+	if c.Chat.SenderUID != "ANDROID-bravo" || c.Chat.MessageID != "0d1e2f30-aaaa-4bbb-8ccc-dddddddddddd" {
+		t.Errorf("chat = %+v", c.Chat)
+	}
+	// Linked to the sender's marker: placed at its position.
+	if math.Abs(c.Lat-12.3456789) > 1e-7 {
+		t.Errorf("chat not placed at the sender: %v", c.Lat)
+	}
+}
+
+func compressedPacket(from, id uint32, pkt *meshpb.TAKPacket) *meshpb.MeshPacket {
+	pkt.IsCompressed = true
+	return radioPacket(from, id, pkt)
+}
+
+func TestCompressedPacketsWithoutDecompressedCopy(t *testing.T) {
+	// Role TAK: the decompressed copy follows, nothing to report.
+	h := newHarness(halow.LinkConnected)
+	h.b.HandleEUD(PortAuto, phone, pli(1, 2), at(0))
+	h.b.HandleRadio(compressedPacket(0x3333, 1, remotePLI("ANDROID-c")), at(1))
+	h.b.HandleRadio(radioPacket(0x3333, 1, remotePLI("ANDROID-c")), at(1.1))
+	h.b.Tick(at(10))
+	if len(h.out.got) != 1 || strings.Contains(h.logs.String(), "did not decompress") {
+		t.Fatalf("deliveries = %d, logs:\n%s", len(h.out.got), h.logs)
+	}
+
+	// Role not TAK: only the compressed packet arrives.
+	h = newHarness(halow.LinkConnected)
+	h.b.HandleEUD(PortAuto, phone, pli(1, 2), at(0))
+	h.b.HandleRadio(compressedPacket(0x3333, 1, remotePLI("ANDROID-c")), at(1))
+	h.b.HandleRadio(compressedPacket(0x3333, 2, remoteChat("ANDROID-c", cot.AllChatRooms, "x")), at(1.5))
+	h.b.Tick(at(2)) // too early
+	if strings.Contains(h.logs.String(), "did not decompress") {
+		t.Fatal("warned before the decompressed copy could arrive")
+	}
+	h.b.Tick(at(5))
+	h.requireLog(t, "did not decompress", "device role to TAK", "packets=2")
+	if s := h.b.Snapshot(at(5)); !s.Meshtastic.Fault || !strings.Contains(s.Meshtastic.Error, "role to TAK") {
+		t.Errorf("snapshot = %+v", s.Meshtastic)
+	}
+	if len(h.out.got) != 0 {
+		t.Errorf("delivered %d undecodable packets", len(h.out.got))
+	}
+}

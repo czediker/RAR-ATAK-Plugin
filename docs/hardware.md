@@ -139,14 +139,26 @@ mode**:
 | rxd / txd | 15 / 16 (RXD1 / TXD1) |
 | baud | 115200 (must match `rar.bridge.baud`) |
 | Position → GPS mode | **NOT_PRESENT** |
+| Device → role | **TAK** |
 
 With the Meshtastic CLI over USB, for example:
 
 ```sh
 meshtastic --set serial.enabled true --set serial.mode PROTO \
            --set serial.rxd 15 --set serial.txd 16 --set serial.baud BAUD_115200 \
-           --set position.gps_mode NOT_PRESENT
+           --set position.gps_mode NOT_PRESENT --set device.role TAK
 ```
+
+**Device role TAK.** On Meshtastic firmware 2.7.x, a radio's ATAK module
+runs only when its role is TAK (or TAK_TRACKER). Radios used with the
+Meshtastic ATAK plugin are normally set to TAK. Their module compresses the
+ATAK data they send, and only a radio running the module decompresses it
+for its connected app. With any other role, the RAK hands the bridge
+compressed data the bridge can't read. Positions and chat from those users
+then never reach your EUD, and the bridge logs `received compressed ATAK
+data the radio did not decompress` (and blinks green). Set the role on
+every radio in the group. Firmware 2.8.0 and newer no longer compresses
+this data.
 
 **GPS mode must be `NOT_PRESENT`; `DISABLED` is not enough.** The RAK4631
 firmware's GPS driver uses the same pins, 15 and 16. Unless the GPS mode is
